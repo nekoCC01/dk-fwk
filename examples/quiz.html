@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mini Quiz – Framework Demo</title>
+
+    <style>
+      :root {
+        --bg: #0b1020;
+        --card: rgba(255, 255, 255, 0.06);
+        --card2: rgba(255, 255, 255, 0.08);
+        --text: rgba(255, 255, 255, 0.92);
+        --muted: rgba(255, 255, 255, 0.65);
+        --stroke: rgba(255, 255, 255, 0.12);
+        --accent: #7c5cff;
+        --good: #2ecc71;
+        --bad: #ff5c8a;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(1200px 800px at 20% 10%, rgba(124,92,255,0.25), transparent 55%),
+                    radial-gradient(900px 700px at 90% 20%, rgba(46,204,113,0.14), transparent 55%),
+                    radial-gradient(900px 700px at 60% 90%, rgba(255,92,138,0.14), transparent 55%),
+                    var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        padding: 20px;
+      }
+
+      .shell {
+        width: min(760px, 92vw);
+        border: 1px solid var(--stroke);
+        background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.05));
+        box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        border-radius: 18px;
+        overflow: hidden;
+      }
+
+      .topbar {
+        padding: 18px 18px 14px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--stroke);
+        background: rgba(255,255,255,0.04);
+      }
+
+      .brand {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        min-width: 0;
+      }
+
+      .logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: conic-gradient(from 220deg, var(--accent), rgba(124,92,255,0.25), rgba(46,204,113,0.25), rgba(255,92,138,0.25), var(--accent));
+        box-shadow: 0 10px 25px rgba(124,92,255,0.25);
+        border: 1px solid rgba(255,255,255,0.18);
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-size: 14px;
+        letter-spacing: 0.2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .brand p {
+        margin: 2px 0 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .pill {
+        font-size: 12px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--stroke);
+        background: rgba(255,255,255,0.05);
+        color: var(--muted);
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .pill strong { color: var(--text); font-weight: 650; }
+
+      .content {
+        padding: 18px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .card {
+        border: 1px solid var(--stroke);
+        background: var(--card);
+        border-radius: 16px;
+        padding: 16px;
+      }
+
+      .progressWrap {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .progressBar {
+        flex: 1;
+        height: 10px;
+        border-radius: 999px;
+        border: 1px solid var(--stroke);
+        background: rgba(255,255,255,0.05);
+        overflow: hidden;
+      }
+
+      .progressFill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, rgba(124,92,255,0.95), rgba(124,92,255,0.35));
+        border-right: 1px solid rgba(255,255,255,0.15);
+      }
+
+      .questionTitle {
+        margin: 0 0 10px;
+        font-size: 18px;
+        letter-spacing: 0.2px;
+      }
+
+      .muted { color: var(--muted); font-size: 13px; }
+
+      .options {
+        display: grid;
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .optionBtn {
+        width: 100%;
+        text-align: left;
+        padding: 12px 12px;
+        border-radius: 14px;
+        border: 1px solid var(--stroke);
+        background: rgba(255,255,255,0.05);
+        color: var(--text);
+        cursor: pointer;
+        transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+      }
+
+      .optionBtn:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255,255,255,0.22);
+        background: rgba(255,255,255,0.08);
+      }
+
+      .optionBtn.selected {
+        border-color: rgba(124,92,255,0.7);
+        background: rgba(124,92,255,0.18);
+        box-shadow: 0 10px 25px rgba(124,92,255,0.12);
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        margin-top: 14px;
+      }
+
+      .btn {
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--stroke);
+        background: rgba(255,255,255,0.06);
+        color: var(--text);
+        cursor: pointer;
+      }
+      .btn.primary {
+        background: rgba(124,92,255,0.22);
+        border-color: rgba(124,92,255,0.55);
+      }
+      .btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .resultScore {
+        font-size: 34px;
+        margin: 0;
+        letter-spacing: -0.5px;
+      }
+
+      .review {
+        display: grid;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .reviewItem {
+        border: 1px solid var(--stroke);
+        border-radius: 14px;
+        padding: 12px;
+        background: rgba(255,255,255,0.05);
+        display: grid;
+        gap: 6px;
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .dot {
+        width: 9px; height: 9px; border-radius: 999px;
+        background: var(--muted);
+        display: inline-block;
+      }
+      .dot.good { background: var(--good); }
+      .dot.bad { background: var(--bad); }
+
+      footer {
+        padding: 14px 18px 18px;
+        border-top: 1px solid var(--stroke);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.95em;
+        color: rgba(255,255,255,0.85);
+      }
+    </style>
+  </head>
+
+  <body>
+    <script type="module">
+      /**
+       * Passe den Pfad an deine Ordnerstruktur an.
+       * (Ich habe ihn wie in deinem Beispiel gelassen.)
+       */
+      import { createApp, h, hString } from 'https://nekocc01.github.io/dk-fwk/packages/runtime/dist/fe-fwk.js'
+
+      /**
+       * In diesem Beispiel sind die Fragen "statisch".
+       * In einer echten App könntest du sie z.B. per Fetch laden.
+       */
+      const QUESTIONS = [
+        {
+          q: 'Welche Aussage trifft am ehesten auf Virtual DOM zu?',
+          a: [
+            'Es ist ein Browser-Feature, das automatisch DOM-Updates optimiert.',
+            'Es ist eine leichtgewichtige JS-Repräsentation der DOM-Struktur.',
+            'Es ist ein CSS-Mechanismus zur Beschleunigung von Layouts.',
+          ],
+          correct: 1,
+        },
+        {
+          q: 'Was macht ein Reducer in deinem State-Manager-Ansatz?',
+          a: [
+            'Er liest direkt aus dem DOM und schreibt den State zurück.',
+            'Er führt side-effects aus (Fetch, Timer) und ändert dann global Variablen.',
+            'Er berechnet aus (state, payload) einen neuen State.',
+          ],
+          correct: 2,
+        },
+        {
+          q: 'Warum ist dein Framework gerade noch „teuer“ beim Re-Rendern?',
+          a: [
+            'Weil es aktuell den alten DOM zerstört und alles neu mountet.',
+            'Weil es zu viele CSS-Styles inline setzt.',
+            'Weil es nur mit Fragment-Nodes arbeitet.',
+          ],
+          correct: 0,
+        },
+      ]
+
+      const initialState = {
+        index: 0,          // aktuelle Frage
+        selected: null,    // aktuell ausgewählte Option (Index)
+        answers: [],       // [{ selected, correct, isCorrect }]
+        finished: false,   // Quiz beendet?
+      }
+
+      createApp({
+        state: initialState,
+
+        reducers: {
+          /**
+           * Option auswählen (nur UI-State)
+           */
+          select: (state, optionIndex) => ({
+            ...state,
+            selected: optionIndex,
+          }),
+
+          /**
+           * Antwort bestätigen: in answers pushen, nächste Frage oder finishen
+           */
+          confirm: (state) => {
+            // Wenn nichts ausgewählt wurde, ignorieren
+            if (state.selected == null) return state
+
+            const current = QUESTIONS[state.index]
+            const isCorrect = state.selected === current.correct
+
+            const nextAnswers = state.answers.concat([
+              {
+                selected: state.selected,
+                correct: current.correct,
+                isCorrect,
+              },
+            ])
+
+            const nextIndex = state.index + 1
+            const finished = nextIndex >= QUESTIONS.length
+
+            return {
+              ...state,
+              answers: nextAnswers,
+              index: finished ? state.index : nextIndex,
+              selected: null,
+              finished,
+            }
+          },
+
+          /**
+           * Neustart
+           */
+          restart: () => ({ ...initialState }),
+        },
+
+        view: (state, emit) => {
+          // kleine Helper
+          const total = QUESTIONS.length
+          const progress = state.finished
+            ? 100
+            : Math.round((state.index / total) * 100)
+
+          const score = state.answers.reduce((acc, x) => acc + (x.isCorrect ? 1 : 0), 0)
+
+          return h('div', { class: 'shell' }, [
+            // Topbar
+            h('div', { class: 'topbar' }, [
+              h('div', { class: 'brand' }, [
+                h('div', { class: 'logo', title: 'Mini Quiz' }, []),
+                h('div', {}, [
+                  h('h1', {}, ['Mini Quiz – Framework Demo']),
+                  h('p', {}, ['State + Reducers + View (ohne Reconciliation)']),
+                ]),
+              ]),
+              h('div', { class: 'pill' }, [
+                hString('Fragen: '),
+                h('strong', {}, [hString(total)]),
+                hString(' · '),
+                hString('Score: '),
+                h('strong', {}, [hString(score)]),
+              ]),
+            ]),
+
+            // Content
+            h('div', { class: 'content' }, [
+              // Progress Card
+              h('div', { class: 'card' }, [
+                h('div', { class: 'progressWrap' }, [
+                  h('div', { class: 'muted' }, [
+                    state.finished
+                      ? hString('Fertig ✅')
+                      : hString(`Frage ${state.index + 1} von ${total}`)
+                  ]),
+                  h('div', { class: 'progressBar', 'aria-label': 'Fortschritt' }, [
+                    h('div', {
+                      class: 'progressFill',
+                      style: { width: `${progress}%` },
+                    }, []),
+                  ]),
+                ]),
+              ]),
+
+              // Haupt-Card: Quiz oder Ergebnis
+              state.finished
+                ? renderResult(state, emit, score)
+                : renderQuestion(state, emit),
+            ]),
+
+            // Footer
+            h('footer', {}, [
+              hString('Tipp: Da dein Framework aktuell bei jedem Dispatch den DOM zerstört und neu mountet, '),
+              hString('ist dieses Quiz klein gehalten. Mit Reconciliation (Kap. 7/8) wird das deutlich effizienter. '),
+              hString('Du kannst hier später gut beobachten, wie sich die Anzahl der DOM-Operationen reduziert.'),
+            ]),
+          ])
+        },
+      }).mount(document.body)
+
+      function renderQuestion(state, emit) {
+        const q = QUESTIONS[state.index]
+
+        return h('div', { class: 'card' }, [
+          h('h2', { class: 'questionTitle' }, [hString(q.q)]),
+          h('div', { class: 'muted' }, [
+            hString('Wähle eine Antwort aus und klicke dann auf '),
+            h('code', {}, ['Weiter']),
+            hString('.'),
+          ]),
+
+          h('div', { class: 'options' }, [
+            ...q.a.map((label, i) => {
+              const isSel = state.selected === i
+              return h(
+                'button',
+                {
+                  class: ['optionBtn', isSel ? 'selected' : null].filter(Boolean),
+                  on: { click: () => emit('select', i) },
+                },
+                [hString(label)]
+              )
+            }),
+          ]),
+
+          h('div', { class: 'actions' }, [
+            h(
+              'button',
+              {
+                class: 'btn primary',
+                disabled: state.selected == null,
+                on: { click: () => emit('confirm') },
+              },
+              [hString('Weiter')]
+            ),
+          ]),
+        ])
+      }
+
+      function renderResult(state, emit, score) {
+        const total = QUESTIONS.length
+        const pct = Math.round((score / total) * 100)
+
+        return h('div', { class: 'card' }, [
+          h('h2', { class: 'questionTitle' }, [hString('Ergebnis')]),
+          h('p', { class: 'resultScore' }, [hString(`${score}/${total}`)]),
+          h('p', { class: 'muted' }, [hString(`Das sind ${pct}% richtig.`)]),
+
+          h('div', { class: 'review' }, [
+            ...QUESTIONS.map((q, idx) => {
+              const ans = state.answers[idx]
+              const ok = ans?.isCorrect
+
+              return h('div', { class: 'reviewItem' }, [
+                h('div', { class: 'tag' }, [
+                  h('span', { class: ['dot', ok ? 'good' : 'bad'].filter(Boolean) }, []),
+                  hString(ok ? 'Richtig' : 'Falsch'),
+                  hString(' · '),
+                  hString(`Frage ${idx + 1}`),
+                ]),
+                h('div', {}, [hString(q.q)]),
+                h('div', { class: 'muted' }, [
+                  hString('Deine Antwort: '),
+                  h('code', {}, [hString(q.a[ans.selected])]),
+                ]),
+                ok
+                  ? null
+                  : h('div', { class: 'muted' }, [
+                      hString('Korrekt wäre: '),
+                      h('code', {}, [hString(q.a[ans.correct])]),
+                    ]),
+              ])
+            }),
+          ]),
+
+          h('div', { class: 'actions' }, [
+            h(
+              'button',
+              { class: 'btn', on: { click: () => emit('restart') } },
+              [hString('Nochmal spielen')]
+            ),
+          ]),
+        ])
+      }
+    </script>
+  </body>
+</html>
