@@ -1,5 +1,3 @@
-import equal from 'fast-deep-equal';
-
 function addEventListeners(
   listeners = {},
   el,
@@ -1090,7 +1088,7 @@ function shouldSkipBranch(node) {
   return node.type === DOM_TYPES.COMPONENT
 }
 
-const emptyFn = () => {};
+const emptyFn = () => { };
 function defineComponent({
   render,
   state,
@@ -1162,11 +1160,7 @@ function defineComponent({
       return this.#hostEl
     }
     updateProps(props) {
-      const newProps = { ...this.props, ...props };
-      if (equal(this.props, newProps)) {
-        return
-      }
-      this.props = newProps;
+      this.props = { ...this.props, ...props };
       this.#patch();
     }
     updateState(state) {
