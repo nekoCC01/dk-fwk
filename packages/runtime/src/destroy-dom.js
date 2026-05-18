@@ -1,6 +1,16 @@
-import { DOM_TYPES } from './h.js'
-import { removeEventListeners } from './events.js'
+import { removeEventListeners } from './events'
+import { DOM_TYPES } from './h'
+import { enqueueJob } from './scheduler'
+import { assert } from './utils/assert'
 
+/**
+ * Unmounts the DOM nodes for a virtual DOM tree recursively.
+ *
+ * Removes all `el` references from the vdom tree and removes all the event
+ * listeners from the DOM.
+ *
+ * @param {import('./h').VNode} vdom the virtual DOM node to destroy
+ */
 export function destroyDOM(vdom) {
   const { type } = vdom
 
@@ -20,6 +30,12 @@ export function destroyDOM(vdom) {
       break
     }
 
+    case DOM_TYPES.COMPONENT: {
+      vdom.component.unmount()
+      enqueueJob(() => vdom.component.onUnmounted())
+      break
+    }
+
     default: {
       throw new Error(`Can't destroy DOM of type: ${type}`)
     }
@@ -30,11 +46,16 @@ export function destroyDOM(vdom) {
 
 function removeTextNode(vdom) {
   const { el } = vdom
+
+  assert(el instanceof Text)
+
   el.remove()
 }
 
 function removeElementNode(vdom) {
   const { el, children, listeners } = vdom
+
+  assert(el instanceof HTMLElement)
 
   el.remove()
   children.forEach(destroyDOM)
