@@ -12,7 +12,7 @@ import { patchDOM } from './patch-dom'
 import { hasOwnProperty } from './utils/objects'
 import { fillSlots } from './slots'
 
-const emptyFn = () => {}
+const emptyFn = () => { }
 
 /**
  * @typedef Component
@@ -165,12 +165,7 @@ export function defineComponent({
      * @param {Object.<string, Any>} props the new props to be merged with the existing props
      */
     updateProps(props) {
-      const newProps = { ...this.props, ...props }
-      if (equal(this.props, newProps)) {
-        return
-      }
-
-      this.props = newProps
+      this.props = { ...this.props, ...props }
       this.#patch()
     }
 
