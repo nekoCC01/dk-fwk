@@ -1,4 +1,3 @@
-import equal from 'fast-deep-equal'
 import { destroyDOM } from './destroy-dom'
 import { Dispatcher } from './dispatcher'
 import {
