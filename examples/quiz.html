@@ -253,7 +253,7 @@
        * Passe den Pfad an deine Ordnerstruktur an.
        * (Ich habe ihn wie in deinem Beispiel gelassen.)
        */
-      import { createApp, h, hString } from 'https://nekocc01.github.io/dk-fwk/packages/runtime/dist/fe-fwk.js'
+      import { createApp, defineComponent, h, hString } from '../packages/runtime/dist/fe-fwk.js'
 
       /**
        * In diesem Beispiel sind die Fragen "statisch".
@@ -296,55 +296,42 @@
         finished: false,   // Quiz beendet?
       }
 
-      createApp({
-        state: initialState,
+      const Quiz = defineComponent({
+        state: () => ({ ...initialState, answers: [] }),
 
-        reducers: {
-          /**
-           * Option auswählen (nur UI-State)
-           */
-          select: (state, optionIndex) => ({
-            ...state,
-            selected: optionIndex,
-          }),
-
-          /**
-           * Antwort bestätigen: in answers pushen, nächste Frage oder finishen
-           */
-          confirm: (state) => {
-            // Wenn nichts ausgewählt wurde, ignorieren
-            if (state.selected == null) return state
-
-            const current = QUESTIONS[state.index]
-            const isCorrect = state.selected === current.correct
-
-            const nextAnswers = state.answers.concat([
-              {
-                selected: state.selected,
-                correct: current.correct,
-                isCorrect,
-              },
-            ])
-
-            const nextIndex = state.index + 1
-            const finished = nextIndex >= QUESTIONS.length
-
-            return {
-              ...state,
-              answers: nextAnswers,
-              index: finished ? state.index : nextIndex,
-              selected: null,
-              finished,
-            }
-          },
-
-          /**
-           * Neustart
-           */
-          restart: () => ({ ...initialState }),
+        select(optionIndex) {
+          this.updateState({ selected: optionIndex })
         },
 
-        view: (state, emit) => {
+        confirm() {
+          if (this.state.selected == null) return
+
+          const current = QUESTIONS[this.state.index]
+          const isCorrect = this.state.selected === current.correct
+          const nextAnswers = this.state.answers.concat([
+            {
+              selected: this.state.selected,
+              correct: current.correct,
+              isCorrect,
+            },
+          ])
+          const nextIndex = this.state.index + 1
+          const finished = nextIndex >= QUESTIONS.length
+
+          this.updateState({
+            answers: nextAnswers,
+            index: finished ? this.state.index : nextIndex,
+            selected: null,
+            finished,
+          })
+        },
+
+        restart() {
+          this.updateState({ ...initialState, answers: [] })
+        },
+
+        render() {
+          const state = this.state
           // kleine Helper
           const total = QUESTIONS.length
           const progress = state.finished
@@ -393,8 +380,8 @@
 
               // Haupt-Card: Quiz oder Ergebnis
               state.finished
-                ? renderResult(state, emit, score)
-                : renderQuestion(state, emit),
+                ? renderResult(state, this, score)
+                : renderQuestion(state, this),
             ]),
 
             // Footer
@@ -405,9 +392,11 @@
             ]),
           ])
         },
-      }).mount(document.body)
+      })
 
-      function renderQuestion(state, emit) {
+      createApp(Quiz).mount(document.body)
+
+      function renderQuestion(state, component) {
         const q = QUESTIONS[state.index]
 
         return h('div', { class: 'card' }, [
@@ -425,7 +414,7 @@
                 'button',
                 {
                   class: ['optionBtn', isSel ? 'selected' : null].filter(Boolean),
-                  on: { click: () => emit('select', i) },
+                  on: { click: () => component.select(i) },
                 },
                 [hString(label)]
               )
@@ -438,7 +427,7 @@
               {
                 class: 'btn primary',
                 disabled: state.selected == null,
-                on: { click: () => emit('confirm') },
+                on: { click: () => component.confirm() },
               },
               [hString('Weiter')]
             ),
@@ -446,7 +435,7 @@
         ])
       }
 
-      function renderResult(state, emit, score) {
+      function renderResult(state, component, score) {
         const total = QUESTIONS.length
         const pct = Math.round((score / total) * 100)
 
@@ -485,7 +474,7 @@
           h('div', { class: 'actions' }, [
             h(
               'button',
-              { class: 'btn', on: { click: () => emit('restart') } },
+              { class: 'btn', on: { click: () => component.restart() } },
               [hString('Nochmal spielen')]
             ),
           ]),

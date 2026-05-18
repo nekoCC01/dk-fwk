@@ -11,22 +11,25 @@
 
 
     <script type="module">
-        import { createApp, h, hString } from 'https://nekocc01.github.io/dk-fwk/packages/runtime/dist/fe-fwk.js'
+        import { createApp, defineComponent, h, hString } from '../packages/runtime/dist/fe-fwk.js'
 
-        createApp({
-            state: 0,
+        const Counter = defineComponent({
+            state: () => ({ count: 0 }),
 
-            reducers: {
-                add: (state, amount) => state + amount,
+            add(amount) {
+                this.updateState({ count: this.state.count + amount })
             },
 
-            view: (state, emit) =>
-                h(
+            render() {
+                return h(
                     'button',
-                    { on: { click: () => emit('add', 1) } },
-                    [hString(state)]
-                ),
-        }).mount(document.body)
+                    { on: { click: () => this.add(1) } },
+                    [hString(this.state.count)]
+                )
+            },
+        })
+
+        createApp(Counter).mount(document.body)
     </script>
 
 </body>
