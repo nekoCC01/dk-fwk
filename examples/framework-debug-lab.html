@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Framework Debug Lab</title>
+
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --line: #d9dde3;
+        --text: #17202a;
+        --muted: #667085;
+        --accent: #0f766e;
+        --accent-soft: #e6f4f1;
+        --warn: #a15c00;
+        --warn-soft: #fff4df;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--text);
+        border-radius: 6px;
+        padding: 7px 10px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: #a7b0bd;
+      }
+
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px 10px;
+      }
+
+      .app {
+        width: min(960px, calc(100vw - 32px));
+        margin: 24px auto;
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+      }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+      }
+
+      .title {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      .subtitle,
+      .muted {
+        color: var(--muted);
+      }
+
+      .subtitle {
+        margin: 4px 0 0;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 320px;
+        gap: 14px;
+      }
+
+      .controls,
+      .row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 10px;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #fff;
+      }
+
+      .row.active {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .row-title {
+        font-weight: 650;
+      }
+
+      .facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 4px;
+      }
+
+      .fact {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 8px;
+        color: var(--muted);
+        background: #fff;
+        font-size: 12px;
+      }
+
+      .note {
+        border: 1px solid #edc56f;
+        background: var(--warn-soft);
+        color: var(--warn);
+        border-radius: 8px;
+        padding: 10px;
+      }
+
+      .log {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+      }
+
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.92em;
+      }
+
+      @media (max-width: 760px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .header {
+          display: grid;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <script type="module">
+      import {
+        createApp,
+        defineComponent,
+        h,
+        hString,
+        nextTick,
+      } from '../packages/runtime/dist/fe-fwk.js'
+
+      const renderStats = {
+        app: 0,
+        rows: new Map(),
+      }
+
+      function countRowRender(id) {
+        const current = renderStats.rows.get(id) || 0
+        const next = current + 1
+        renderStats.rows.set(id, next)
+        return next
+      }
+
+      function text(value) {
+        return hString(value)
+      }
+
+      const CounterRow = defineComponent({
+        state() {
+          return {
+            localClicks: 0,
+          }
+        },
+
+        onMounted() {
+          console.log('[CounterRow:onMounted]', this.props.label)
+          this.emit('rowMounted', `${this.props.label} mounted`)
+        },
+
+        onUnmounted() {
+          console.log('[CounterRow:onUnmounted]', this.props.label)
+        },
+
+        clickLocal() {
+          this.updateState({ localClicks: this.state.localClicks + 1 })
+          this.emit('bump', this.props.id)
+        },
+
+        render() {
+          const renderCount = countRowRender(this.props.id)
+
+          return h(
+            'li',
+            {
+              class: ['row', this.props.active ? 'active' : null].filter(Boolean),
+            },
+            [
+              h('div', {}, [
+                h('div', { class: 'row-title' }, [text(this.props.label)]),
+                h('div', { class: 'facts' }, [
+                  h('span', { class: 'fact' }, [text(`parent count: ${this.props.count}`)]),
+                  h('span', { class: 'fact' }, [text(`child clicks: ${this.state.localClicks}`)]),
+                  h('span', { class: 'fact' }, [text(`row renders: ${renderCount}`)]),
+                  h('span', { class: 'fact' }, [text(`key: ${this.props.id}`)]),
+                ]),
+              ]),
+              h('div', { class: 'row-actions' }, [
+                h(
+                  'button',
+                  {
+                    class: 'primary',
+                    on: { click: this.clickLocal },
+                  },
+                  [text('+1')]
+                ),
+                h(
+                  'button',
+                  {
+                    on: { click: () => this.emit('select', this.props.id) },
+                  },
+                  [text('Select')]
+                ),
+                h(
+                  'button',
+                  {
+                    on: { click: () => this.emit('remove', this.props.id) },
+                  },
+                  [text('Remove')]
+                ),
+              ]),
+            ]
+          )
+        },
+      })
+
+      const DebugLab = defineComponent({
+        state() {
+          return {
+            nextId: 4,
+            draft: 'Delta',
+            selectedId: 1,
+            showNote: true,
+            items: [
+              { id: 1, label: 'Alpha', count: 0 },
+              { id: 2, label: 'Beta', count: 0 },
+              { id: 3, label: 'Gamma', count: 0 },
+            ],
+            log: ['app state created'],
+          }
+        },
+
+        addLog(message) {
+          const entry = `${new Date().toLocaleTimeString()} - ${message}`
+          this.updateState({ log: [entry].concat(this.state.log).slice(0, 6) })
+        },
+
+        setDraft(event) {
+          this.updateState({ draft: event.target.value })
+        },
+
+        addRow() {
+          const label = this.state.draft.trim() || `Item ${this.state.nextId}`
+          const item = { id: this.state.nextId, label, count: 0 }
+
+          this.updateState({
+            nextId: this.state.nextId + 1,
+            draft: '',
+            selectedId: item.id,
+            items: this.state.items.concat([item]),
+            log: [`add ${label}`].concat(this.state.log).slice(0, 6),
+          })
+        },
+
+        bumpRow(id) {
+          this.updateState({
+            items: this.state.items.map((item) =>
+              item.id === id ? { ...item, count: item.count + 1 } : item
+            ),
+            log: [`child emitted bump(${id})`].concat(this.state.log).slice(0, 6),
+          })
+        },
+
+        selectRow(id) {
+          this.updateState({
+            selectedId: id,
+            log: [`child emitted select(${id})`].concat(this.state.log).slice(0, 6),
+          })
+        },
+
+        removeRow(id) {
+          const removed = this.state.items.find((item) => item.id === id)
+          const remaining = this.state.items.filter((item) => item.id !== id)
+          const selectedId = this.state.selectedId === id
+            ? remaining[0]?.id ?? null
+            : this.state.selectedId
+
+          this.updateState({
+            selectedId,
+            items: remaining,
+            log: [`remove ${removed?.label ?? id}`].concat(this.state.log).slice(0, 6),
+          })
+        },
+
+        reverseRows() {
+          this.updateState({
+            items: this.state.items.slice().reverse(),
+            log: ['reverse keyed rows'].concat(this.state.log).slice(0, 6),
+          })
+        },
+
+        replaceSelected() {
+          const selected = this.state.items.find((item) => item.id === this.state.selectedId)
+          if (!selected) return
+
+          const replacement = {
+            id: this.state.nextId,
+            label: `${selected.label} reset`,
+            count: selected.count,
+          }
+
+          this.updateState({
+            nextId: this.state.nextId + 1,
+            selectedId: replacement.id,
+            items: this.state.items.map((item) =>
+              item.id === selected.id ? replacement : item
+            ),
+            log: [`replace key ${selected.id} -> ${replacement.id}`].concat(this.state.log).slice(0, 6),
+          })
+        },
+
+        toggleNote() {
+          this.updateState({
+            showNote: !this.state.showNote,
+            log: ['toggle conditional note'].concat(this.state.log).slice(0, 6),
+          })
+        },
+
+        async waitForScheduler() {
+          await nextTick()
+          this.addLog('nextTick resolved')
+        },
+
+        render() {
+          renderStats.app += 1
+
+          return h('main', { class: 'app' }, [
+            h('section', { class: 'panel header' }, [
+              h('div', {}, [
+                h('h1', { class: 'title' }, [text('Framework Debug Lab')]),
+                h('p', { class: 'subtitle' }, [
+                  text('Parent state, child state, emit(), lifecycle hooks, keyed reconciliation.'),
+                ]),
+              ]),
+              h('div', { class: 'facts' }, [
+                h('span', { class: 'fact' }, [text(`app renders: ${renderStats.app}`)]),
+                h('span', { class: 'fact' }, [text(`items: ${this.state.items.length}`)]),
+              ]),
+            ]),
+
+            h('section', { class: 'grid' }, [
+              h('div', { class: 'panel stack' }, [
+                h('div', { class: 'controls' }, [
+                  h('input', {
+                    value: this.state.draft,
+                    placeholder: 'New row label',
+                    on: { input: this.setDraft },
+                  }),
+                  h('button', { class: 'primary', on: { click: this.addRow } }, [text('Add row')]),
+                  h('button', { on: { click: this.reverseRows } }, [text('Reverse')]),
+                  h('button', { on: { click: this.replaceSelected } }, [text('Replace selected key')]),
+                  h('button', { on: { click: this.toggleNote } }, [text('Toggle note')]),
+                  h('button', { on: { click: this.waitForScheduler } }, [text('nextTick')]),
+                ]),
+
+                this.state.showNote
+                  ? h('div', { class: 'note' }, [
+                      text('Debug idea: click +1 on a row, then Reverse. The child click counter stays with the same keyed component. Replace selected key creates a new component instance, so local child state resets.'),
+                    ])
+                  : null,
+
+                h(
+                  'ul',
+                  { class: 'stack' },
+                  this.state.items.map((item) =>
+                    h(
+                      CounterRow,
+                      {
+                        key: item.id,
+                        id: item.id,
+                        label: item.label,
+                        count: item.count,
+                        active: item.id === this.state.selectedId,
+                        on: {
+                          bump: this.bumpRow,
+                          select: this.selectRow,
+                          remove: this.removeRow,
+                          rowMounted: this.addLog,
+                        },
+                      },
+                      []
+                    )
+                  )
+                ),
+              ]),
+
+              h('aside', { class: 'panel stack' }, [
+                h('div', {}, [
+                  h('strong', {}, [text('What to inspect')]),
+                  h('p', { class: 'muted' }, [
+                    text('Set breakpoints in '),
+                    h('code', {}, [text('component.js')]),
+                    text(', '),
+                    h('code', {}, [text('patch-dom.js')]),
+                    text(', '),
+                    h('code', {}, [text('mount-dom.js')]),
+                    text(' and '),
+                    h('code', {}, [text('scheduler.js')]),
+                    text('.'),
+                  ]),
+                ]),
+                h('div', {}, [
+                  h('strong', {}, [text('Recent log')]),
+                  h(
+                    'ol',
+                    { class: 'log' },
+                    this.state.log.map((entry) => h('li', {}, [text(entry)]))
+                  ),
+                ]),
+              ]),
+            ]),
+          ])
+        },
+      })
+
+      createApp(DebugLab).mount(document.body)
+    </script>
+  </body>
+</html>
