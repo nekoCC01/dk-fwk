@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slots and fillSlots — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 6: Slots and fillSlots</h1>
+<p>Imagine you’re building a reusable <code>Modal</code> component.</p>
+<p>You want the modal to own:</p>
+<ul>
+<li>The backdrop</li>
+<li>The close button</li>
+<li>The layout</li>
+</ul>
+<p>…but <strong>not</strong> the text inside. Sometimes it should show a login form, sometimes a warning, sometimes a simple message.</p>
+<p>How do you keep the <em>frame</em> fixed while letting the <em>picture</em> change?</p>
+<ul>
+<li>If the modal hard‑codes its body content, it’s not reusable.</li>
+<li>If the parent passes a big HTML string, you lose structure and safety.</li>
+<li>If the parent tries to “reach inside” the modal DOM and insert elements, you’re back to manual DOM hacking.</li>
+</ul>
+<p>You need a way for the modal to say:</p>
+<blockquote>
+<p>“Here is <em>where</em> your content goes. I’ll control everything else.”</p>
+</blockquote>
+<p>That’s what <strong>slots</strong> are: <em>holes</em> in a component where someone else’s VNodes can be dropped.</p>
+<p>And you need something that actually takes the caller’s content and pushes it into those holes before mounting. That’s <strong><code>fillSlots</code></strong>.</p>
+<p>This chapter is about:</p>
+<ul>
+<li>What slots are in this framework</li>
+<li>How to declare them with <code>hSlot</code></li>
+<li>How <code>fillSlots</code> rewrites VNode trees to insert external content</li>
+<li>How this ties into components and mounting from earlier chapters</li>
+</ul>
+<p>We’ll build on:</p>
+<ul>
+<li>VNodes and types from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a></li>
+<li><code>h</code>, <code>hFragment</code>, <code>hSlot</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a></li>
+<li>Components and their <code>render()</code> from <a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+<li>The mounting pipeline from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a></li>
+</ul>
+<hr />
+<h2>1. The problem: reusable layout, flexible content</h2>
+<p>Think about a <code>Card</code> component:</p>
+<pre><code class="language-js">// Desired usage
+h(Card, null, [
+  h('h2', null, ['Title']),
+  h('p', null, ['Some body text']),
+])
+</code></pre>
+<p>We’d like <code>Card</code> itself to control:</p>
+<ul>
+<li>The outer border and padding</li>
+<li>The structure (maybe header, body, footer)</li>
+</ul>
+<p>But we want the <strong>caller</strong> to decide which elements go into the “body” area.</p>
+<p>If you try to code <code>Card</code> without slots, you might end up with props like:</p>
+<pre><code class="language-js">h(Card, {
+  titleText: 'Title',
+  bodyText: 'Some body text',
+})
+</code></pre>
+<p>That works only for very simple content. As soon as callers want:</p>
+<ul>
+<li>Multiple paragraphs</li>
+<li>Images</li>
+<li>Links</li>
+<li>Nested components</li>
+</ul>
+<p>…this “string prop” approach breaks down.</p>
+<p>We need a way to say:</p>
+<ul>
+<li>“Here is my skeleton VNode tree”</li>
+<li>“At this exact spot, put whatever VNodes the caller passed as children”</li>
+</ul>
+<p>That’s what slots plus <code>fillSlots</code> give you.</p>
+<hr />
+<h2>2. A quick refresher: <code>hSlot</code> and <code>DOM_TYPES.SLOT</code></h2>
+<p>In <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a> you saw <code>hSlot</code> briefly:</p>
+<pre><code class="language-js">import { hSlot } from './h'
+
+hSlot()           // simple, no default content
+hSlot([/* vnodes */]) // with default content
+</code></pre>
+<p>Under the hood (<code>h.js</code>):</p>
+<pre><code class="language-js">let hSlotCalled = false
+
+export function hSlot(children = []) {
+  hSlotCalled = true
+  return { type: DOM_TYPES.SLOT, children }
+}
+</code></pre>
+<p>Two important things happen:</p>
+<ol>
+<li>It returns a VNode with <code>type: 'slot'</code> and <code>children</code> holding <strong>default content</strong>.</li>
+<li>It flips the global <code>hSlotCalled</code> flag so components can later decide whether they need to run slot‑filling logic.</li>
+</ol>
+<p>Also, in <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a> we saw that <code>DOM_TYPES</code> includes:</p>
+<pre><code class="language-js">export const DOM_TYPES = {
+  TEXT: 'text',
+  ELEMENT: 'element',
+  FRAGMENT: 'fragment',
+  COMPONENT: 'component',
+  SLOT: 'slot',
+}
+</code></pre>
+<p>But notice something: <strong><code>mountDOM</code> never handles <code>DOM_TYPES.SLOT</code></strong>. If a <code>SLOT</code> node reaches the mounting layer, it throws.</p>
+<p>That’s because slots are a <strong>pure VNode concept</strong>. They must be replaced with real content <strong>before</strong> we ever touch the DOM.</p>
+<p><code>fillSlots</code> is the function that does that replacement.</p>
+<hr />
+<h2>3. Where do slot contents live?</h2>
+<p>The framework needs two pieces to make slots useful:</p>
+<ol>
+<li>A way for a <strong>component</strong> to declare where content goes → <code>hSlot()</code> inside its <code>render()</code>.</li>
+<li>A way for the <strong>parent</strong> to provide that content → pass VNodes as the component’s <code>children</code>.</li>
+</ol>
+<p>The parent side you already know from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>:</p>
+<pre><code class="language-js">// Parent render
+h(Card, null, [
+  h('h2', null, ['Title']),
+  h('p', null, ['Body']),
+])
+</code></pre>
+<p>On the component side, <a href="03_definecomponent_component.html">defineComponent / Component</a> gives every component instance a private <code>#children</code> array:</p>
+<pre><code class="language-js">// component.js
+#children = []
+
+setExternalContent(children) {
+  this.#children = children
+}
+</code></pre>
+<p>Those <code>children</code> come from the component VNode created by <code>h</code>:</p>
+<ul>
+<li>
+<p><code>h(Card, null, [ ... ])</code> builds a <code>COMPONENT</code> VNode.</p>
+</li>
+<li>
+<p><code>mountDOM</code> extracts that <code>children</code> array.</p>
+</li>
+<li>
+<p>It constructs a <code>Component</code> instance and calls:</p>
+<pre><code class="language-js">component.setExternalContent(children)
+</code></pre>
+</li>
+</ul>
+<p>So when <code>Card.render()</code> runs, the instance has:</p>
+<ul>
+<li><code>this.props</code> – its own props</li>
+<li><code>this.state</code> – its own state</li>
+<li><code>this.#children</code> – the external VNodes the parent passed</li>
+</ul>
+<p>The missing link is: <strong>how do those <code>#children</code> get inserted into the right place in the render tree?</strong></p>
+<p>That’s <code>fillSlots</code>’ job.</p>
+<hr />
+<h2>4. The component’s <code>render()</code> and the slot flag</h2>
+<p>In <a href="03_definecomponent_component.html">defineComponent / Component</a>, each component class wraps your <code>render</code> function with its own <code>render</code> method:</p>
+<pre><code class="language-js">// component.js
+import { didCreateSlot, resetDidCreateSlot } from './h'
+import { fillSlots } from './slots'
+
+render() {
+  const vdom = render.call(this)
+
+  if (didCreateSlot()) {
+    fillSlots(vdom, this.#children)
+    resetDidCreateSlot()
+  }
+
+  return vdom
+}
+</code></pre>
+<p>Let’s walk this through slowly.</p>
+<ol>
+<li>
+<p><code>render.call(this)</code> is <strong>your</strong> render function, something like:</p>
+<pre><code class="language-js">render() {
+  return h('div', { class: 'card' }, [
+    h('div', { class: 'card-body' }, [hSlot()]),
+  ])
+}
+</code></pre>
+<p>If it calls <code>hSlot()</code>, the global <code>hSlotCalled</code> flag becomes <code>true</code>.</p>
+</li>
+<li>
+<p>After your <code>render()</code> returns, the wrapper looks at <code>didCreateSlot()</code>:</p>
+<ul>
+<li>If no slot was created, it just returns the VNode tree as-is.</li>
+<li>If at least one slot was created, it calls <code>fillSlots(vdom, this.#children)</code>.</li>
+</ul>
+</li>
+<li>
+<p><code>fillSlots</code> walks the VNode tree and replaces all slot placeholders with:</p>
+<ul>
+<li>The external content (<code>this.#children</code>) if there is any</li>
+<li>Or the slot’s default content (the <code>children</code> passed to <code>hSlot</code>) otherwise</li>
+</ul>
+</li>
+<li>
+<p><code>resetDidCreateSlot()</code> resets the global flag to <code>false</code> so it doesn’t leak across renders.</p>
+</li>
+</ol>
+<p>Analogy: your component’s <code>render</code> draws a frame with empty openings (slots). Only after that does a helper come in, see which frames have openings, and drop actual photos (external content) into them.</p>
+<hr />
+<h2>5. <code>fillSlots</code>: walking the VNode tree and swapping holes</h2>
+<p>Now let’s look at the actual implementation in <code>slots.js</code>:</p>
+<pre><code class="language-js">// slots.js
+import { DOM_TYPES, hFragment } from './h'
+import { traverseDFS } from './traverse-dom'
+import { assert } from './utils/assert'
+
+export function fillSlots(vdom, externalContent = []) {
+  function processNode(node, parent, index) {
+    insertViewInSlot(node, parent, index, externalContent)
+  }
+
+  traverseDFS(vdom, processNode, shouldSkipBranch)
+}
+</code></pre>
+<p>Key ideas:</p>
+<ul>
+<li><code>fillSlots</code> doesn’t know anything about components or DOM; it only sees the root VNode and an array of <strong>external VNodes</strong>.</li>
+<li>It uses <code>traverseDFS</code> from <code>traverse-dom.js</code> to walk the VNode tree depth‑first.</li>
+<li>For every node visited, it calls <code>processNode</code>, which delegates to <code>insertViewInSlot</code>.</li>
+</ul>
+<p><code>traverseDFS</code> (from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a> section 5) looks like:</p>
+<pre><code class="language-js">export function traverseDFS(
+  vdom,
+  processNode,
+  shouldSkipBranch = () =&gt; false,
+  parentNode = null,
+  index = null
+) {
+  if (shouldSkipBranch(vdom)) return
+
+  processNode(vdom, parentNode, index)
+
+  if (vdom.children) {
+    vdom.children.forEach((child, i) =&gt;
+      traverseDFS(child, processNode, shouldSkipBranch, vdom, i)
+    )
+  }
+}
+</code></pre>
+<p>So for each node it visits, you get:</p>
+<ul>
+<li><code>node</code> – the current VNode</li>
+<li><code>parentNode</code> – its parent VNode (or <code>null</code> at the root)</li>
+<li><code>index</code> – its position in <code>parentNode.children</code> (or <code>null</code> at the root)</li>
+</ul>
+<p><code>fillSlots</code> uses this to surgically edit <code>parent.children[index]</code> for slot nodes.</p>
+<hr />
+<h2>6. Replacing a single slot: <code>insertViewInSlot</code></h2>
+<p>Still in <code>slots.js</code>:</p>
+<pre><code class="language-js">function insertViewInSlot(node, parent, index, externalContent) {
+  if (node.type !== DOM_TYPES.SLOT) return
+
+  assert(parent !== null, 'Slot nodes must have a parent')
+  assert(index !== null, 'Slot nodes must have an index')
+
+  const defaultContent = node.children
+  const views =
+    externalContent.length &gt; 0 ? externalContent : defaultContent
+
+  assert(Array.isArray(views), 'Slot views must be an array')
+
+  const hasContent = views.length &gt; 0
+  if (hasContent) {
+    parent.children.splice(index, 1, hFragment(views))
+  } else {
+    parent.children.splice(index, 1)
+  }
+}
+</code></pre>
+<p>Walkthrough:</p>
+<ol>
+<li>
+<p><strong>Ignore non‑slot nodes</strong></p>
+<pre><code class="language-js">if (node.type !== DOM_TYPES.SLOT) return
+</code></pre>
+</li>
+<li>
+<p><strong>Sanity checks</strong></p>
+<p>Slots can only live <strong>inside</strong> something else; they cannot be the root. That’s why we assert:</p>
+<pre><code class="language-js">assert(parent !== null, 'Slot nodes must have a parent')
+assert(index !== null, 'Slot nodes must have an index')
+</code></pre>
+</li>
+<li>
+<p><strong>Decide which content to insert</strong></p>
+<pre><code class="language-js">const defaultContent = node.children
+const views =
+  externalContent.length &gt; 0 ? externalContent : defaultContent
+</code></pre>
+<ul>
+<li><code>defaultContent</code> – the content given to <code>hSlot([...])</code> when the component was written.</li>
+<li><code>externalContent</code> – the VNodes passed as children from the parent (<code>this.#children</code>).</li>
+<li>If the parent provided <strong>any</strong> external content, that wins over default.</li>
+<li>If not, the component’s default content is used.</li>
+</ul>
+<p>This mimics HTML slots: “use caller content if present; otherwise, fall back to my own.”</p>
+</li>
+<li>
+<p><strong>Replace the slot node in its parent</strong></p>
+<p>Two cases:</p>
+<ul>
+<li>
+<p>There is some content (<code>views.length &gt; 0</code>)</p>
+<pre><code class="language-js">parent.children.splice(index, 1, hFragment(views))
+</code></pre>
+<ul>
+<li>Remove one element (the slot) at <code>index</code></li>
+<li>Insert <strong>one new element</strong> at the same position: a <code>FRAGMENT</code> wrapping <code>views</code></li>
+</ul>
+<p>Why a fragment?</p>
+<ul>
+<li>Callers might pass <strong>multiple</strong> VNodes as slot content:<pre><code class="language-js">h(Card, null, [
+  h('h2', null, ['Title']),
+  h('p', null, ['Body']),
+])
+</code></pre>
+</li>
+<li>We want them all to occupy the slot position <em>together</em>.</li>
+<li>Fragments are the framework’s “group of siblings, no wrapper element” (see <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a> and <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>). The children’s DOM nodes go directly into the parent, but they behave as a single unit from the VNode perspective.</li>
+</ul>
+</li>
+<li>
+<p>No content at all (no external, no default)</p>
+<pre><code class="language-js">parent.children.splice(index, 1)
+</code></pre>
+<p>The slot just disappears; nothing is rendered in its place.</p>
+</li>
+</ul>
+</li>
+</ol>
+<p>Analogy: the parent VNode’s <code>children</code> array is like a row of picture hooks. When we find a hook that’s marked “slot,” we take it down and either:</p>
+<ul>
+<li>Hang a small collaged frame (fragment with multiple photos), or</li>
+<li>Leave the wall blank if there’s nothing to show.</li>
+</ul>
+<hr />
+<h2>7. Skipping component subtrees</h2>
+<p>One last helper in <code>slots.js</code>:</p>
+<pre><code class="language-js">function shouldSkipBranch(node) {
+  return node.type === DOM_TYPES.COMPONENT
+}
+</code></pre>
+<p>This is passed into <code>traverseDFS</code>:</p>
+<pre><code class="language-js">traverseDFS(vdom, processNode, shouldSkipBranch)
+</code></pre>
+<p>Meaning: <strong>do not</strong> descend into child components when filling slots.</p>
+<p>Why?</p>
+<ul>
+<li>Slots are <strong>per component instance</strong>.</li>
+<li>Each component handles its own slots based on its own <code>this.#children</code>.</li>
+<li>If <code>fillSlots</code> for parent A wandered into child B’s VNode tree, it might try to shove A’s external content into B’s slot placeholders, which makes no sense.</li>
+</ul>
+<p>Instead, the contract is:</p>
+<ul>
+<li>Parent calls <code>render()</code> on its own component instance.</li>
+<li>That instance’s <code>render()</code>:
+<ul>
+<li>Runs its own <code>hSlot()</code> calls (if any).</li>
+<li>Runs its own <code>fillSlots(vdom, this.#children)</code> on <strong>its root VNode only</strong>.</li>
+</ul>
+</li>
+<li>The traversal stops when it encounters another component node.</li>
+</ul>
+<p>This keeps slot filling nicely scoped.</p>
+<hr />
+<h2>8. A concrete example: <code>RouterLink</code> and its slot</h2>
+<p>We’ve already met a real component that uses slots: <code>RouterLink</code> in <code>router-components.js</code>:</p>
+<pre><code class="language-js">// router-components.js
+import { defineComponent } from './component'
+import { h, hSlot } from './h'
+
+export const RouterLink = defineComponent({
+  render() {
+    const { to } = this.props
+
+    return h(
+      'a',
+      {
+        href: to,
+        on: {
+          click: (e) =&gt; {
+            e.preventDefault()
+            this.appContext.router.navigateTo(to)
+          },
+        },
+      },
+      [hSlot()]
+    )
+  },
+})
+</code></pre>
+<p>Usage:</p>
+<pre><code class="language-js">h(RouterLink, { to: '/home' }, ['Go home'])
+</code></pre>
+<p>Let’s follow the chain:</p>
+<ol>
+<li>
+<p>Parent’s <code>render</code> creates a <code>COMPONENT</code> VNode for <code>RouterLink</code> with:</p>
+<ul>
+<li><code>props: { to: '/home' }</code></li>
+<li><code>children: ['Go home']</code> (later turned into a <code>TEXT</code> VNode)</li>
+</ul>
+</li>
+<li>
+<p><code>mountDOM</code> sees this component VNode, does:</p>
+<pre><code class="language-js">const component = new RouterLink(props, events, hostComponent)
+component.setExternalContent(children)  // children = ['Go home' → text vnode]
+component.mount(parentEl, index)
+</code></pre>
+</li>
+<li>
+<p>Inside <code>RouterLink.mount</code>:</p>
+<pre><code class="language-js">this.#vdom = this.render()
+</code></pre>
+<ul>
+<li>This calls the user render function we saw.</li>
+<li>That render calls <code>hSlot()</code>, flipping <code>hSlotCalled</code> to <code>true</code>.</li>
+</ul>
+</li>
+<li>
+<p>The wrapper <code>Component.render()</code> sees <code>didCreateSlot()</code> is true and calls:</p>
+<pre><code class="language-js">fillSlots(vdom, this.#children)
+resetDidCreateSlot()
+</code></pre>
+<p>At this point:</p>
+<ul>
+<li><code>vdom</code> has:
+<ul>
+<li>An <code>ELEMENT</code> VNode for <code>&lt;a&gt;</code></li>
+<li>One child: a <code>SLOT</code> VNode with no default children</li>
+</ul>
+</li>
+<li><code>this.#children</code> is <code>[ TextVNode('Go home') ]</code></li>
+</ul>
+</li>
+<li>
+<p><code>fillSlots</code> walks the tree, hits the <code>SLOT</code> node, and calls:</p>
+<pre><code class="language-js">insertViewInSlot(
+  node,           // the SLOT vnode
+  parent,         // the &lt;a&gt; vnode
+  index,          // usually 0
+  externalContent // [TextVNode('Go home')]
+)
+</code></pre>
+<p>That ends up doing:</p>
+<pre><code class="language-js">parent.children.splice(index, 1, hFragment(views))
+</code></pre>
+<p>So the <code>&lt;a&gt;</code>’s children become:</p>
+<pre><code class="language-js">[
+  {
+    type: 'fragment',
+    children: [ TextVNode('Go home') ]
+  }
+]
+</code></pre>
+</li>
+<li>
+<p>After that, <code>mountDOM</code> runs on this updated VNode tree:</p>
+<ul>
+<li>It mounts the <code>&lt;a&gt;</code> element.</li>
+<li>It mounts the fragment child, which just mounts the text node inside the <code>&lt;a&gt;</code>.</li>
+</ul>
+</li>
+</ol>
+<p>Resulting DOM:</p>
+<pre><code class="language-html">&lt;a href=&quot;/home&quot;&gt;Go home&lt;/a&gt;
+</code></pre>
+<p><code>RouterLink</code> fully controls:</p>
+<ul>
+<li>The <code>&lt;a&gt;</code> tag</li>
+<li>The routing logic on click</li>
+</ul>
+<p>The caller fully controls:</p>
+<ul>
+<li>The link label (text or any nested content)</li>
+</ul>
+<p>This is exactly the picture frame analogy: you choose the frame, the user chooses the picture.</p>
+<hr />
+<h2>9. One render cycle with slots: who does what?</h2>
+<p>To see slots in context, let’s put the pieces together in a small sequence diagram.</p>
+<p>Participants:</p>
+<ul>
+<li><code>Parent</code> – any component that uses a slotted child</li>
+<li><code>Child</code> – the component that declares a slot in its render</li>
+<li><code>Render</code> – the child’s wrapped <code>render()</code> method</li>
+<li><code>SlotFill</code> – the <code>fillSlots</code> helper</li>
+<li><code>Dom</code> – the DOM mounting logic (<code>mountDOM</code> and friends)</li>
+</ul>
+<pre class="mermaid">sequenceDiagram
+  participant Parent as Parent
+  participant Child as Child
+  participant Render as Render
+  participant SlotFill as SlotFill
+  participant Dom as Dom
+
+  Parent->>Dom: Mount or update child vnode with external content
+  Dom->>Child: Construct or reuse child instance
+  Child->>Render: Build vdom tree that may contain slots
+  Render->>SlotFill: Replace slot nodes with external content
+  Render-->>Child: Return vdom tree with slots filled
+  Child->>Dom: Mount or patch filled vdom tree into parent element
+</pre>
+<p>Relating this to earlier chapters:</p>
+<ul>
+<li><code>Dom</code> is driven by <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</li>
+<li><code>Render</code> is the wrapper method in <a href="03_definecomponent_component.html">defineComponent / Component</a>.</li>
+<li><code>SlotFill</code> is <code>fillSlots</code> from this chapter.</li>
+<li><code>Parent</code> and <code>Child</code> are VNode‑based components built with <code>h</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>.</li>
+</ul>
+<hr />
+<h2>10. Patterns you can build with slots</h2>
+<p>With just “one unnamed slot” you can already do a lot:</p>
+<h3>10.1 Control outer skeleton, let callers fill content</h3>
+<p>The classic <code>Card</code>:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h, hSlot } from './h'
+
+export const Card = defineComponent({
+  render() {
+    return h('div', { class: 'card' }, [
+      h('div', { class: 'card-body' }, [hSlot()]),
+    ])
+  },
+})
+</code></pre>
+<p>Usage:</p>
+<pre><code class="language-js">h(Card, null, [
+  h('h2', null, ['Profile']),
+  h('p', null, ['User details go here']),
+])
+</code></pre>
+<p>The <code>Card</code> knows nothing about what “user details” are. It just carves out a space.</p>
+<h3>10.2 Provide fallback content when nothing is passed</h3>
+<p>Slots can have default content:</p>
+<pre><code class="language-js">// Inside component render
+h('div', null, [
+  hSlot([ h('p', null, ['No data available']) ]),
+])
+</code></pre>
+<ul>
+<li>If parent passes children → those replace the slot.</li>
+<li>If parent passes nothing → the <code>&lt;p&gt;No data available&lt;/p&gt;</code> is rendered.</li>
+</ul>
+<h3>10.3 Compose components without extra wrappers</h3>
+<p>Because <code>fillSlots</code> always wraps inserted content in a fragment, you can pass multiple siblings without extra <code>&lt;div&gt;</code>s:</p>
+<pre><code class="language-js">h(Card, null, [
+  h('h3', null, ['Title']),
+  h('ul', null, [
+// ...
+  ]),
+])
+</code></pre>
+<p>From the DOM’s point of view, these siblings go straight under the <code>card-body</code> element, no extra wrapper.</p>
+<p>That plays nicely with the fragment behavior you saw in <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a> and <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</p>
+<hr />
+<h2>11. Things slots deliberately do <em>not</em> do</h2>
+<p>You might notice some things are missing:</p>
+<ul>
+<li>Multiple named slots (<code>header</code>, <code>footer</code>, etc.)</li>
+<li>Scoped slots (passing data from child to slot content)</li>
+</ul>
+<p>This framework intentionally keeps slots <strong>simple</strong>:</p>
+<ul>
+<li>One unnamed slot area per component render tree (though you could call <code>hSlot</code> multiple times and share the same <code>externalContent</code>).</li>
+<li>No “slot props” – if you need to pass data back up, you use component events from <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>.</li>
+</ul>
+<p>You still get a lot of compositional power with this minimalist design, especially combined with:</p>
+<ul>
+<li>Fragments for multiple roots</li>
+<li>Component events for child–parent communication</li>
+<li>The router components that already use slots for link labels, as in <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a></li>
+</ul>
+<hr />
+<h2>12. Recap</h2>
+<p>Slots in this framework are like <strong>cutouts in a cardboard template</strong>:</p>
+<ul>
+<li>The component’s render function draws the template and calls <code>hSlot()</code> where it expects outside content.</li>
+<li><code>hSlot()</code> creates a <code>SLOT</code> VNode and flips a flag to say “some slot exists in this render.”</li>
+<li>The component wrapper <code>render</code> checks that flag, then runs <code>fillSlots</code> with:
+<ul>
+<li>the component’s VNode tree</li>
+<li>the external VNodes passed from the parent as <code>children</code></li>
+</ul>
+</li>
+</ul>
+<p><code>fillSlots</code>:</p>
+<ul>
+<li>Uses <code>traverseDFS</code> to walk the VNode tree, skipping component subtrees.</li>
+<li>Finds <code>SLOT</code> nodes and replaces them:
+<ul>
+<li>With external content if present</li>
+<li>Otherwise with default content from the slot’s own <code>children</code></li>
+</ul>
+</li>
+<li>Always wraps the inserted content in a fragment so multiple VNodes can live in one slot location.</li>
+</ul>
+<p>After that transformation, the VNode tree contains only:</p>
+<ul>
+<li><code>TEXT</code>, <code>ELEMENT</code>, <code>FRAGMENT</code>, and <code>COMPONENT</code> nodes</li>
+</ul>
+<p>…and is safe to feed into <code>mountDOM</code> and <code>patchDOM</code> from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</p>
+<p>Slots give you <em>layout ownership</em> without <em>content ownership</em>: components define frames, parents pick pictures.</p>
+<hr />
+<p>Now that components can both <strong>talk</strong> to parents via events (<a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>) and <strong>accept content</strong> from parents via slots, the next question is: how do you stitch many components into a real application with pages and navigation?</p>
+<p>In the next chapter, <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>, you’ll see how routing uses all the concepts you’ve learned—components, events, slots, and the dispatcher—to render different components based on the URL and keep your UI in sync with browser navigation.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="05_dispatcher_and_component_events_emit.html">&larr; Dispatcher and component events (emit)</a></span>
+    <span><a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet &rarr;</a></span>
+  </nav>
+</body>
+</html>

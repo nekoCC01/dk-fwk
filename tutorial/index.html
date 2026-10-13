@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>src tour</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <h1>src</h1>
+  <p class="muted">Lens: <span class="lens">beginner-tutorial</span> &middot; 10 chapters &middot; 19 files analyzed</p>
+  <p>This project is a small component-based frontend framework with its own virtual DOM, diffing algorithm, and router. You build apps by defining components, returning virtual DOM trees from their render functions, and letting the framework mount, update, and unmount them efficiently in the browser.</p>
+
+  <h2>Architecture map</h2>
+  <pre class="mermaid">
+flowchart TD
+    A0["VNode / DOM_TYPES"]
+    A1["h / hString / hFragment / hSlot"]
+    A2["defineComponent / Component"]
+    A3["createApp / Application context"]
+    A4["mountDOM / destroyDOM / patchDOM"]
+    A5["Dispatcher and component events (emit)"]
+    A6["Slots and fillSlots"]
+    A7["HashRouter / RouterLink / RouterOutlet"]
+    A8["Scheduler / nextTick"]
+    A9["RouteMatcher / validateRoute"]
+    A3 -- "instantiates root component cl" --> A2
+    A3 -- "creates root VNode for mountin" --> A0
+    A3 -- "delegates root DOM mounting an" --> A4
+    A3 -- "injects router instance into a" --> A7
+    A0 -- "drives how DOM and components " --> A4
+    A0 -- "is produced by helper creation" --> A1
+    A0 -- "includes SLOT nodes that are l" --> A6
+    A1 -- "builds typed virtual nodes" --> A0
+    A1 -- "is used inside render function" --> A2
+    A2 -- "produces VNode trees via rende" --> A0
+    A2 -- "calls DOM functions to mount a" --> A4
+    A2 -- "wraps dispatcher for child-to-" --> A5
+    A2 -- "calls fillSlots to resolve slo" --> A6
+    A2 -- "reads shared appContext (e.g. " --> A3
+    A4 -- "branches behavior based on VNo" --> A0
+    A4 -- "creates, mounts, patches, and " --> A2
+    A4 -- "schedules lifecycle jobs throu" --> A8
+    A5 -- "is embedded in each component " --> A2
+    A6 -- "is invoked during component re" --> A2
+    A7 -- "builds matchers from validated" --> A9
+    A7 -- "is provided to app and accesse" --> A3
+    A7 -- "is consumed via router-aware c" --> A2
+    A7 -- "uses internal dispatcher to no" --> A5
+    A8 -- "runs lifecycle-related jobs en" --> A4
+    A8 -- "indirectly orders lifecycle ho" --> A2
+    A9 -- "powers route matching, params," --> A7
+  </pre>
+
+  <h2>Read in order</h2>
+  <ol>
+    <li><a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a></li>
+    <li><a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a></li>
+    <li><a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+    <li><a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a></li>
+    <li><a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a></li>
+    <li><a href="06_slots_and_fillslots.html">Slots and fillSlots</a></li>
+    <li><a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a></li>
+    <li><a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a></li>
+    <li><a href="09_scheduler_nexttick.html">Scheduler / nextTick</a></li>
+    <li><a href="10_createapp_application_context.html">createApp / Application context</a></li>
+  </ol>
+
+  <h2>Files the LLM picked</h2>
+<p>This codebase is a tiny front-end framework implementing a virtual DOM, a component model, and a hash-based router. The main subsystems are app bootstrapping, component lifecycle and rendering, virtual DOM creation and diffing, DOM mounting/unmounting, routing, and some shared utilities. I prioritized the app entry/exports, core component and VDOM primitives, patch/mount/destroy logic, router and route-matcher implementation, and one representative of utilities, skipping lower-level helpers unless they are central to the architecture.</p>
+
+  <ul class="files">
+    <li><code>app.js</code></li>
+    <li><code>index.js</code></li>
+    <li><code>component.js</code></li>
+    <li><code>h.js</code></li>
+    <li><code>mount-dom.js</code></li>
+    <li><code>patch-dom.js</code></li>
+    <li><code>destroy-dom.js</code></li>
+    <li><code>slots.js</code></li>
+    <li><code>traverse-dom.js</code></li>
+    <li><code>dispatcher.js</code></li>
+    <li><code>events.js</code></li>
+    <li><code>router-components.js</code></li>
+    <li><code>router.js</code></li>
+    <li><code>route-matchers.js</code></li>
+    <li><code>scheduler.js</code></li>
+    <li><code>nodes-equal.js</code></li>
+    <li><code>utils/arrays.js</code></li>
+    <li><code>utils/objects.js</code></li>
+    <li><code>utils/assert.js</code></li>
+  </ul>
+</body>
+</html>

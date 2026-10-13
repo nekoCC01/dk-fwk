@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>h / hString / hFragment / hSlot — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 2: h / hString / hFragment / hSlot</h1>
+<p>Imagine you want a button that increments a counter.</p>
+<p>You <em>could</em> do this:</p>
+<pre><code class="language-js">const button = document.createElement('button')
+button.textContent = 'Clicked 0 times'
+// ...later, when state changes...
+button.textContent = 'Clicked 1 time'
+</code></pre>
+<p>Now add a <code>&lt;span&gt;</code> for the number. Then a title above. Then conditionally show a warning. Then nest this whole thing in a reusable “CounterCard” component.</p>
+<p>Very quickly:</p>
+<ul>
+<li>You are manually juggling <code>createElement</code>, <code>append</code>, <code>textContent</code>, and <code>remove</code>.</li>
+<li>You have to remember <em>which</em> DOM node belongs to <em>which</em> piece of state.</li>
+<li>You’re rewriting the same wiring-again-and-again.</li>
+</ul>
+<p>In <a href="01_vnode_dom_types.html">Chapter 1: VNode / DOM_TYPES</a> you saw the solution: <strong>describe</strong> your UI as a tree of VNodes, and let other functions (<code>mountDOM</code>, <code>patchDOM</code>, <code>destroyDOM</code>) deal with the messy DOM details.</p>
+<p>But writing VNodes by hand is awkward:</p>
+<pre><code class="language-js">// legal but painful
+const view = {
+  type: 'element',
+  tag: 'button',
+  props: { id: 'save-btn' },
+  children: [
+    { type: 'text', value: 'Save' },
+  ],
+}
+</code></pre>
+<p>You don’t want to build every brick by hand. You want <strong>Lego molds</strong>.</p>
+<p>This chapter introduces those molds:</p>
+<ul>
+<li><code>h</code> – mold for <strong>elements and components</strong></li>
+<li><code>hString</code> – mold for <strong>text nodes</strong></li>
+<li><code>hFragment</code> – mold for <strong>groups with no wrapper</strong></li>
+<li><code>hSlot</code> – mold for <strong>placeholders where someone else’s content will go</strong></li>
+</ul>
+<p>By the end, you’ll be writing render functions that feel close to JSX, but using only plain JavaScript.</p>
+<hr />
+<h2>1. The four molds: big picture</h2>
+<p>From <a href="01_vnode_dom_types.html">Chapter 1</a> you know a VNode is a plain object with a <code>type</code> from <code>DOM_TYPES</code>.</p>
+<p>These helpers create those objects for you:</p>
+<ul>
+<li>
+<p><strong><code>h(tag, props, children)</code></strong></p>
+<ul>
+<li>If <code>tag</code> is a <strong>string</strong> (e.g. <code>'div'</code>), you get an <code>ELEMENT</code> VNode.</li>
+<li>If <code>tag</code> is a <strong>function/class</strong> (a component), you get a <code>COMPONENT</code> VNode.</li>
+</ul>
+</li>
+<li>
+<p><strong><code>hString(text)</code></strong></p>
+<ul>
+<li>Always produces a <code>TEXT</code> VNode.</li>
+</ul>
+</li>
+<li>
+<p><strong><code>hFragment(children)</code></strong></p>
+<ul>
+<li>Produces a <code>FRAGMENT</code> VNode – multiple children, no extra wrapper in the DOM.</li>
+</ul>
+</li>
+<li>
+<p><strong><code>hSlot(children?)</code></strong></p>
+<ul>
+<li>Produces a <code>SLOT</code> VNode – a <strong>named hole</strong> that <code>fillSlots</code> will later fill.</li>
+<li>Default content comes from the optional <code>children</code>.</li>
+</ul>
+</li>
+</ul>
+<p>You will use them constantly inside:</p>
+<ul>
+<li>plain view code (e.g. <code>createApp</code> uses <code>h</code> on the root component)</li>
+<li>component render functions (see <a href="03_definecomponent_component.html">defineComponent / Component</a>)</li>
+<li>routing-related components (see <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>)</li>
+</ul>
+<hr />
+<h2>2. <code>h</code>: your main UI building function</h2>
+<p>Think of <code>h</code> as “HTML, but in JavaScript”:</p>
+<pre><code class="language-js">import { h } from './h'
+
+// &lt;button id=&quot;save-btn&quot;&gt;Save&lt;/button&gt;
+const vdom = h('button', { id: 'save-btn' }, ['Save'])
+</code></pre>
+<h3>2.1 What <code>h</code> actually creates</h3>
+<p>From <code>h.js</code>:</p>
+<pre><code class="language-js">export function h(tag, props = {}, children = []) {
+  const type =
+    typeof tag === 'string' ? DOM_TYPES.ELEMENT : DOM_TYPES.COMPONENT
+
+  assert(
+    typeof props === 'object' &amp;&amp; !Array.isArray(props),
+    '[vdom] h() expects an object as props (2nd argument)'
+  )
+  assert(
+    Array.isArray(children),
+    `[vdom] h() expects an array of children (3rd argument), but got '${typeof children}'`
+  )
+
+  return {
+    tag,
+    props,
+    type,
+    children: mapTextNodes(withoutNulls(children)),
+  }
+}
+</code></pre>
+<p>Piece by piece:</p>
+<ol>
+<li>
+<p><strong>Figure out what kind of node it is</strong></p>
+<pre><code class="language-js">const type =
+  typeof tag === 'string' ? DOM_TYPES.ELEMENT : DOM_TYPES.COMPONENT
+</code></pre>
+<ul>
+<li><code>'div'</code>, <code>'button'</code>, <code>'span'</code> → <code>ELEMENT</code>.</li>
+<li>A function/class (a component from <code>defineComponent</code>) → <code>COMPONENT</code>.</li>
+</ul>
+<p>Like a factory line: the first check is “is this a brick or a kit of bricks?”.</p>
+</li>
+<li>
+<p><strong>Defensive checks</strong></p>
+<pre><code class="language-js">assert(
+  typeof props === 'object' &amp;&amp; !Array.isArray(props),
+  '[vdom] h() expects an object as props (2nd argument)'
+)
+assert(
+  Array.isArray(children),
+  `[vdom] h() expects an array of children (3rd argument), but got '${typeof children}'`
+)
+</code></pre>
+<ul>
+<li><code>props</code> must be a plain object (not <code>null</code>, not an array).</li>
+<li><code>children</code> must be an array.</li>
+</ul>
+<p>These checks fail <strong>early</strong>, before the DOM layer tries to interpret nonsense.</p>
+</li>
+<li>
+<p><strong>Clean and normalize children</strong></p>
+<pre><code class="language-js">return {
+  tag,
+  props,
+  type,
+  children: mapTextNodes(withoutNulls(children)),
+}
+</code></pre>
+<p>Two helpers:</p>
+<ul>
+<li><code>withoutNulls(children)</code> – removes <code>null</code>/<code>undefined</code> entries<br />
+Useful if you do <code>condition ? child : null</code>.</li>
+<li><code>mapTextNodes(...)</code> – converts strings, numbers, booleans, etc., into <code>TEXT</code> VNodes via <code>hString</code>.</li>
+</ul>
+<p>So you can write:</p>
+<pre><code class="language-js">h('button', null, [
+  'Clicked ',
+  this.state.count,
+  ' times',
+])
+</code></pre>
+<p>and you will get three <code>TEXT</code> children, <strong>not</strong> raw JS values.</p>
+</li>
+</ol>
+<h3>2.2 Element vs component usage</h3>
+<h4>Element example</h4>
+<pre><code class="language-js">// &lt;a href=&quot;/about&quot; class=&quot;link&quot;&gt;About&lt;/a&gt;
+const aboutLink = h(
+  'a',
+  { href: '/about', class: 'link' },
+  ['About']
+)
+</code></pre>
+<p>After <code>h</code>:</p>
+<ul>
+<li><code>type: 'element'</code></li>
+<li><code>tag: 'a'</code></li>
+<li><code>props: { href: '/about', class: 'link' }</code></li>
+<li><code>children: [ { type: 'text', value: 'About' } ]</code></li>
+</ul>
+<p>Later, <code>mountDOM</code> looks at <code>type</code> and does <code>document.createElement('a')</code>, applies attributes and children. See <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a> for that part.</p>
+<h4>Component example</h4>
+<p>Say you defined a component (we’ll see <code>defineComponent</code> fully next chapter, but this is enough for now):</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+
+const Counter = defineComponent({
+  state() {
+    return { count: 0 }
+  },
+  render() {
+    return h('button', {
+      on: {
+        click: () =&gt; this.updateState({ count: this.state.count + 1 }),
+      },
+    }, [`Clicked ${this.state.count} times`])
+  },
+})
+</code></pre>
+<p>Using <code>h</code> with this component:</p>
+<pre><code class="language-js">const vdom = h(Counter, { key: 'main-counter' }, [])
+</code></pre>
+<p>Now:</p>
+<ul>
+<li><code>type: 'component'</code></li>
+<li><code>tag: Counter</code> (the constructor)</li>
+<li><code>props: { key: 'main-counter' }</code></li>
+<li><code>children: []</code> (used later as slot content)</li>
+</ul>
+<p><code>mountDOM</code> will create a <code>Component</code> instance, mount it, and wire it up. Patching will use the <code>key</code> to compare list items (see <code>areNodesEqual</code> in <code>nodes-equal.js</code> and <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>).</p>
+<hr />
+<h2>3. Props: attributes, events, class, style</h2>
+<p><code>props</code> on element VNodes become:</p>
+<ul>
+<li>HTML attributes</li>
+<li>classes</li>
+<li>inline styles</li>
+<li>DOM event listeners</li>
+</ul>
+<h3>3.1 Attributes and classes</h3>
+<p>Any normal key (not <code>on</code>, not <code>style</code>) is treated as an attribute:</p>
+<pre><code class="language-js">h('input', {
+  id: 'username',
+  type: 'text',
+  placeholder: 'Your name',
+})
+</code></pre>
+<p>Later, <code>mountDOM</code> calls <code>setAttributes</code> to apply them.</p>
+<p>Classes can be:</p>
+<pre><code class="language-js">h('div', { class: 'panel primary' })
+h('div', { class: ['panel', 'primary'] })
+</code></pre>
+<p>Diffing logic (<code>patchClasses</code> in <code>patch-dom.js</code>) treats both forms nicely. It knows how to add/remove classes efficiently by comparing arrays/strings.</p>
+<h3>3.2 Style</h3>
+<p>Inline styles are an object:</p>
+<pre><code class="language-js">h('div', {
+  style: {
+    color: 'red',
+    backgroundColor: 'black',
+  },
+})
+</code></pre>
+<p><code>patchStyles</code> later figures out which properties changed.</p>
+<h3>3.3 Events</h3>
+<p>Events live under the <code>on</code> key:</p>
+<pre><code class="language-js">h('button', {
+  on: {
+    click: (event) =&gt; {
+      console.log('Clicked', event)
+    },
+  },
+}, ['Click me'])
+</code></pre>
+<p>When this VNode is mounted:</p>
+<ul>
+<li><code>mountDOM</code> extracts props and events via <code>extractPropsAndEvents</code>.</li>
+<li><code>addEventListeners</code> in <code>events.js</code> adds listeners to the real DOM element.</li>
+<li>If a <code>hostComponent</code> is passed, the listener’s <code>this</code> is bound to the component instance (see <code>addEventListener</code>).</li>
+</ul>
+<p>Patching logic can later update, add, or remove event listeners without rebuilding the element.</p>
+<hr />
+<h2>4. <code>hString</code>: text VNodes</h2>
+<p>Sometimes you want explicit control over text nodes, or you’re writing helpers that should deal in VNodes only.</p>
+<p><code>hString</code> is the small mold just for text:</p>
+<pre><code class="language-js">import { hString } from './h'
+
+const labelText = hString('Username')
+</code></pre>
+<p>From <code>h.js</code>:</p>
+<pre><code class="language-js">export function hString(str) {
+  return { type: DOM_TYPES.TEXT, value: String(str) }
+}
+</code></pre>
+<ul>
+<li>Always sets <code>type: 'text'</code>.</li>
+<li>Forces the value into a string with <code>String(str)</code> to avoid surprises.</li>
+</ul>
+<p>You <em>could</em> use only <code>hString</code> for text, but as you saw, <code>h</code> and <code>hFragment</code> will convert primitive children (string, number, boolean, bigint, symbol) for you automatically via <code>mapTextNodes</code>.</p>
+<p>Example with mixed content:</p>
+<pre><code class="language-js">h('p', null, [
+  'You have ',
+  3,
+  ' unread messages.',
+])
+</code></pre>
+<p>Internally becomes:</p>
+<pre><code class="language-js">[
+  hString('You have '),
+  hString(3),
+  hString(' unread messages.')
+]
+</code></pre>
+<hr />
+<h2>5. <code>hFragment</code>: multiple siblings, no wrapper</h2>
+<p>HTML insists on a single root element inside a component if you’re writing markup. But in many layouts, extra wrappers are toxic:</p>
+<ul>
+<li>They break flexbox or grid.</li>
+<li>They change CSS selectors.</li>
+<li>They add unwanted margins or display behavior.</li>
+</ul>
+<p>Fragments solve that: multiple siblings <strong>as if</strong> they were top-level, no <code>&lt;div&gt;</code> in the way.</p>
+<h3>5.1 Creating a fragment</h3>
+<pre><code class="language-js">import { h, hFragment, hString } from './h'
+
+const header = hFragment([
+  h('h1', null, [hString('Welcome')]),
+  h('p', null, [hString('This is the intro')]),
+])
+</code></pre>
+<p>From <code>h.js</code>:</p>
+<pre><code class="language-js">export function hFragment(vNodes) {
+  assert(
+    Array.isArray(vNodes),
+    '[vdom] hFragment() expects an array of vNodes'
+  )
+
+  return {
+    type: DOM_TYPES.FRAGMENT,
+    children: mapTextNodes(withoutNulls(vNodes)),
+  }
+}
+</code></pre>
+<p>Again:</p>
+<ul>
+<li>Enforces <code>children</code> is an array.</li>
+<li>Removes nulls.</li>
+<li>Normalizes text children.</li>
+</ul>
+<h3>5.2 How fragments end up in the DOM</h3>
+<p><code>mountDOM</code>’s fragment case:</p>
+<pre><code class="language-js">function createFragmentNodes(vdom, parentEl, index, hostComponent) {
+  const { children } = vdom
+  vdom.el = parentEl
+
+  for (const child of children) {
+    mountDOM(child, parentEl, index, hostComponent)
+
+    if (index == null) {
+      continue
+    }
+
+    switch (child.type) {
+      case DOM_TYPES.FRAGMENT:
+        index += child.children.length
+        break
+      case DOM_TYPES.COMPONENT:
+        index += child.component.elements.length
+        break
+      default:
+        index++
+    }
+  }
+}
+</code></pre>
+<p>Key points:</p>
+<ul>
+<li>Fragments themselves don’t get a DOM wrapper; <code>vdom.el</code> is set to the <strong>parent element</strong>.</li>
+<li>Their children are inserted directly into <code>parentEl</code>.</li>
+<li>The <code>index</code> math keeps siblings in the right order even when children are nested fragments or components.</li>
+</ul>
+<p><code>extractChildren</code> in <code>h.js</code> also flattens nested fragments when patching:</p>
+<pre><code class="language-js">export function extractChildren(vdom) {
+  if (vdom.children == null) {
+    return []
+  }
+
+  const children = []
+
+  for (const child of vdom.children) {
+    if (child.type === DOM_TYPES.FRAGMENT) {
+      children.push(...extractChildren(child))
+    } else {
+      children.push(child)
+    }
+  }
+
+  return children
+}
+</code></pre>
+<p>This is heavily used by <code>patchChildren</code> in <code>patch-dom.js</code> to diff children arrays.</p>
+<h3>5.3 Fragments in components</h3>
+<p>In <a href="03_definecomponent_component.html"><code>defineComponent / Component</code></a>, components can return fragments from their <code>render</code> functions to have <strong>multiple root nodes</strong>:</p>
+<pre><code class="language-js">render() {
+  return hFragment([
+    h('h1', null, ['Title']),
+    h('button', { on: { click: this.handleClick } }, ['Click']),
+  ])
+}
+</code></pre>
+<p>The <code>Component.elements</code> getter knows how to walk fragments and component children to return all real DOM elements for the component:</p>
+<pre><code class="language-js">if (this.#vdom.type === DOM_TYPES.FRAGMENT) {
+  return extractChildren(this.#vdom).flatMap((child) =&gt; {
+    if (child.type === DOM_TYPES.COMPONENT) {
+      return child.component.elements
+    }
+
+    return [child.el]
+  })
+}
+</code></pre>
+<p>So other parts of the system can still find “the first element” or “all elements” of a component, even with fragments at the top.</p>
+<hr />
+<h2>6. <code>hSlot</code>: holes for external content</h2>
+<p>Imagine a reusable <code>Card</code> component:</p>
+<ul>
+<li>The card owns the border, padding, background.</li>
+<li>The caller decides the <strong>content</strong>.</li>
+</ul>
+<p>In HTML terms, Web Components use <code>&lt;slot&gt;</code>. In this framework, you use <code>hSlot</code>.</p>
+<h3>6.1 Creating a slot in a component</h3>
+<p>Look at <code>RouterLink</code> in <code>router-components.js</code>:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h, hSlot } from './h'
+
+export const RouterLink = defineComponent({
+  render() {
+    const { to } = this.props
+
+    return h(
+      'a',
+      {
+        href: to,
+        on: {
+          click: (e) =&gt; {
+            e.preventDefault()
+            this.appContext.router.navigateTo(to)
+          },
+        },
+      },
+      [hSlot()]
+    )
+  },
+})
+</code></pre>
+<p>Usage might look like:</p>
+<pre><code class="language-js">h(RouterLink, { to: '/home' }, ['Go home'])
+</code></pre>
+<p>Conceptually:</p>
+<ul>
+<li><code>RouterLink</code> controls the outer <code>&lt;a&gt;</code> and the click behavior.</li>
+<li>Whatever you pass as children (<code>'Go home'</code>) gets inserted into the <code>&lt;a&gt;</code> where <code>hSlot()</code> was placed.</li>
+</ul>
+<h3>6.2 What <code>hSlot</code> returns</h3>
+<p>From <code>h.js</code>:</p>
+<pre><code class="language-js">let hSlotCalled = false
+
+export function hSlot(children = []) {
+  hSlotCalled = true
+  return { type: DOM_TYPES.SLOT, children }
+}
+</code></pre>
+<p>And two helper functions:</p>
+<pre><code class="language-js">export function didCreateSlot() {
+  return hSlotCalled
+}
+
+export function resetDidCreateSlot() {
+  hSlotCalled = false
+}
+</code></pre>
+<p>The idea:</p>
+<ul>
+<li>Every time a component’s <code>render()</code> calls <code>hSlot()</code>, the global flag flips to <code>true</code>.</li>
+<li>After rendering, the component logic can check <code>didCreateSlot()</code> to decide whether it needs to traverse the VNode tree and replace slots with real content.</li>
+<li>When done, it calls <code>resetDidCreateSlot()</code> to avoid affecting the next render.</li>
+</ul>
+<h3>6.3 How slot filling works</h3>
+<p>The component class in <code>component.js</code> uses this in <code>render()</code>:</p>
+<pre><code class="language-js">render() {
+  const vdom = render.call(this)
+
+  if (didCreateSlot()) {
+    fillSlots(vdom, this.#children)
+    resetDidCreateSlot()
+  }
+
+  return vdom
+}
+</code></pre>
+<ul>
+<li>
+<p><code>this.#children</code> is the array of <strong>external content</strong> passed from the parent:</p>
+<pre><code class="language-js">setExternalContent(children) {
+  this.#children = children
+}
+</code></pre>
+</li>
+<li>
+<p><code>fillSlots</code> (from <code>slots.js</code>) traverses the VNode tree and performs an <strong>in‑place replacement</strong>:</p>
+<pre><code class="language-js">function insertViewInSlot(node, parent, index, externalContent) {
+  if (node.type !== DOM_TYPES.SLOT) return
+
+  const defaultContent = node.children
+  const views =
+    externalContent.length &gt; 0 ? externalContent : defaultContent
+
+  const hasContent = views.length &gt; 0
+  if (hasContent) {
+    parent.children.splice(index, 1, hFragment(views))
+  } else {
+    parent.children.splice(index, 1)
+  }
+}
+</code></pre>
+</li>
+</ul>
+<p>Important details:</p>
+<ul>
+<li>Slot nodes are <strong>never</strong> mounted directly. <code>mountDOM</code> doesn’t know what to do with <code>DOM_TYPES.SLOT</code> and will throw if it encounters one.</li>
+<li>Slot content is always wrapped in a <strong>fragment</strong> (<code>hFragment(views)</code>) so that:
+<ul>
+<li>You can pass multiple VNodes as content.</li>
+<li>The insertion behaves like “drop these siblings here”.</li>
+</ul>
+</li>
+</ul>
+<p>So:</p>
+<pre><code class="language-js">h(Parent, null, [
+  h('strong', null, ['Bold']),
+  h('span', null, ['Text']),
+])
+</code></pre>
+<p>becomes, inside the parent’s VNode tree:</p>
+<ul>
+<li>At the slot location, a <code>FRAGMENT</code> whose children are <code>strong</code> and <code>span</code>.</li>
+</ul>
+<h3>6.4 Putting it together: a simple Card with slots</h3>
+<p>A minimal Card-like component:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h, hSlot } from './h'
+
+export const Card = defineComponent({
+  render() {
+    return h('div', { class: 'card' }, [
+      h('div', { class: 'card-body' }, [hSlot()]),
+    ])
+  },
+})
+</code></pre>
+<p>Used as:</p>
+<pre><code class="language-js">h(Card, null, [
+  h('p', null, ['Content inside card']),
+])
+</code></pre>
+<p>Render steps:</p>
+<ol>
+<li>Parent uses <code>h(Card, null, [...children...])</code>.</li>
+<li><code>mountDOM</code> sees a <code>COMPONENT</code>, creates a <code>Component</code> instance, and calls <code>setExternalContent(children)</code>.</li>
+<li>Card’s <code>render()</code> returns a tree with a <code>SLOT</code> node inside.</li>
+<li><code>didCreateSlot()</code> is <code>true</code>, so <code>fillSlots</code> replaces that <code>SLOT</code> with a fragment containing the external paragraph.</li>
+<li><code>mountDOM</code> then proceeds to mount the modified VNode tree (no <code>SLOT</code> nodes left; just elements, text, fragments).</li>
+</ol>
+<hr />
+<h2>7. How these helpers fit into the whole flow</h2>
+<p>To see the helpers in context, here’s a small sequence that happens when the app starts and renders a root component.</p>
+<p>We’ll use five participants:</p>
+<ul>
+<li><code>App</code> – the <code>createApp</code> wrapper</li>
+<li><code>RootComp</code> – the root component class</li>
+<li><code>RenderFn</code> – the root component’s render function</li>
+<li><code>HHelpers</code> – our <code>h</code> / <code>hString</code> / <code>hFragment</code> / <code>hSlot</code></li>
+<li><code>DOMLayer</code> – everything that mounts and patches DOM (<code>mountDOM</code>, <code>patchDOM</code>, <code>destroyDOM</code>)</li>
+</ul>
+<pre class="mermaid">sequenceDiagram
+  participant App as App
+  participant RootComp as RootComp
+  participant RenderFn as RenderFn
+  participant HHelpers as HHelpers
+  participant DOMLayer as DOMLayer
+
+  App->>HHelpers: Create root component vnode
+  App->>DOMLayer: Mount root vnode into container
+  DOMLayer->>RootComp: Construct component instance
+  RootComp->>RenderFn: Call render for current state
+  RenderFn->>HHelpers: Build tree of vnodes
+  HHelpers-->>RenderFn: Return vnode tree
+  RenderFn-->>RootComp: Return vnode tree
+  RootComp-->>DOMLayer: Pass vnode tree to mount
+  DOMLayer-->>App: Root DOM is now mounted
+</pre>
+<p>The critical role of the helpers:</p>
+<ul>
+<li>They convert <em>your</em> render logic into <strong>well‑formed VNodes</strong>.</li>
+<li>Those VNodes carry <code>DOM_TYPES</code> labels introduced in <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a>.</li>
+<li>The DOM layer and the component system rely on this structure being consistent.</li>
+</ul>
+<p>Without <code>h</code>/<code>hString</code>/<code>hFragment</code>/<code>hSlot</code>, you’d either:</p>
+<ul>
+<li>Hand‑build all VNodes, or</li>
+<li>Mix DOM and state logic directly, which is exactly what this framework is trying to lift off your shoulders.</li>
+</ul>
+<hr />
+<h2>8. Recap</h2>
+<p>We’ve turned raw VNode objects into friendly <strong>Lego molds</strong>:</p>
+<ul>
+<li>
+<p><strong><code>h(tag, props, children)</code></strong></p>
+<ul>
+<li>Builds <code>ELEMENT</code> VNodes when <code>tag</code> is a string.</li>
+<li>Builds <code>COMPONENT</code> VNodes when <code>tag</code> is a component constructor.</li>
+<li>Cleans children (<code>null</code> removal, text normalization).</li>
+<li>Carries attributes, events, classes, and styles in <code>props</code>.</li>
+</ul>
+</li>
+<li>
+<p><strong><code>hString(text)</code></strong></p>
+<ul>
+<li>Simple, explicit <code>TEXT</code> VNode creator.</li>
+</ul>
+</li>
+<li>
+<p><strong><code>hFragment(children)</code></strong></p>
+<ul>
+<li>Groups sibling VNodes without adding a wrapper in the DOM.</li>
+<li>Lets components have multiple root nodes cleanly.</li>
+</ul>
+</li>
+<li>
+<p><strong><code>hSlot(children?)</code></strong></p>
+<ul>
+<li>Marks a hole for external content, with optional default content.</li>
+<li>Sets a global flag so components can efficiently decide whether slot filling is needed.</li>
+<li>Gets replaced with a fragment containing external or default content by <code>fillSlots</code>.</li>
+</ul>
+</li>
+</ul>
+<p>With these helpers, writing a render function becomes “describe the UI in VNode form”, not “mutate the DOM in exactly the right order”.</p>
+<p>In the next chapter, <a href="03_definecomponent_component.html">defineComponent / Component</a>, you’ll use these helpers inside real components with state and lifecycle:</p>
+<ul>
+<li>How <code>defineComponent</code> wraps your <code>render</code> function.</li>
+<li>How <code>Component</code> instances call <code>render</code>, patch the DOM, and run <code>onMounted</code>/<code>onUnmounted</code>.</li>
+<li>How props, state, slots, and events come together in everyday component code.</li>
+</ul>
+<p>That is where the molds you just learned become full‑blown, reactive UI building blocks.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="01_vnode_dom_types.html">&larr; VNode / DOM_TYPES</a></span>
+    <span><a href="03_definecomponent_component.html">defineComponent / Component &rarr;</a></span>
+  </nav>
+</body>
+</html>

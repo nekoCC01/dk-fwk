@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>createApp / Application context — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 10: createApp / Application context</h1>
+<p>You finish your framework’s core: VNodes, components, patching, router, scheduler.</p>
+<p>Now imagine a real user visiting your site:</p>
+<ul>
+<li>Which component do you mount first?</li>
+<li>Where in the DOM does it go?</li>
+<li>How do all components get access to the router?</li>
+<li>How do you shut the whole thing down cleanly?</li>
+</ul>
+<p>If components are actors and the DOM is the stage, you still need a <strong>stage manager</strong>:</p>
+<ul>
+<li>Puts the main actor on stage (root component)</li>
+<li>Hands every actor the same shared tools (router, global services)</li>
+<li>Knows when the show starts (mount) and ends (unmount)</li>
+</ul>
+<p>That is what <code>createApp</code> does.</p>
+<p>In this chapter you’ll see:</p>
+<ul>
+<li>How <code>createApp</code> builds an <strong>Application object</strong> with <code>mount</code> and <code>unmount</code></li>
+<li>How the <strong>application context</strong> is created and injected into every component</li>
+<li>How the router is wired in (or replaced with a no‑op)</li>
+<li>How this ties together all previous chapters into a runnable app</li>
+</ul>
+<p>We’ll end with a small example that looks very close to how you’d actually <strong>bootstrap</strong> a real project.</p>
+<hr />
+<h2>1. The problem: lots of pieces, no single entry point</h2>
+<p>By now you have many building blocks:</p>
+<ul>
+<li>VNodes and <code>DOM_TYPES</code> from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a></li>
+<li><code>h</code>, <code>hFragment</code>, <code>hSlot</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a></li>
+<li>Components and lifecycle from <a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+<li>The DOM engine from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a></li>
+<li>Component events via <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a></li>
+<li>Slots from <a href="06_slots_and_fillslots.html">Slots and fillSlots</a></li>
+<li>Routing from <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a></li>
+<li>Route matching from <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a></li>
+<li>The scheduler from <a href="09_scheduler_nexttick.html">Scheduler / nextTick</a></li>
+</ul>
+<p>Each piece works, but if you write the bootstrapping code yourself, it might look like:</p>
+<pre><code class="language-js">// Pseudocode
+const router = new HashRouter(routes)
+const appContext = { router }
+
+const vdom = h(AppRoot, appProps)
+mountDOM(vdom, document.getElementById('app'), null, { appContext })
+
+router.init()
+</code></pre>
+<p>And on teardown:</p>
+<pre><code class="language-js">destroyDOM(vdom)
+router.destroy()
+</code></pre>
+<p>You could do that manually in every project, but then:</p>
+<ul>
+<li>Every app has to remember to wire the <code>appContext</code> correctly</li>
+<li>Every app has to remember to init and destroy the router</li>
+<li>You have no single abstraction that says “this is <em>the</em> application”</li>
+</ul>
+<p><code>createApp</code> is a thin wrapper that bundles these conventions into one place.</p>
+<hr />
+<h2>2. What <code>createApp</code> returns: the Application object</h2>
+<p>The public API is simple—exported from <code>index.js</code>:</p>
+<pre><code class="language-js">// index.js
+export { createApp } from './app.js'
+</code></pre>
+<p>Definition (simplified JSDoc from <code>app.js</code>):</p>
+<pre><code class="language-js">/**
+ * @typedef Application
+ * @type {object}
+ * @property {(parentEl: HTMLElement) =&gt; void} mount
+ * @property {function} unmount
+ */
+</code></pre>
+<p>You call:</p>
+<pre><code class="language-js">import { createApp } from './index'
+import { App } from './App'
+
+const app = createApp(App, { title: 'Hello' }, { router })
+app.mount(document.getElementById('app'))
+
+// Later, maybe:
+app.unmount()
+</code></pre>
+<p>Analogy: <code>createApp</code> is like hiring a stage manager. The returned <code>app</code> is the manager:</p>
+<ul>
+<li><code>mount(parentEl)</code> → raise the curtain, put the root actor on stage</li>
+<li><code>unmount()</code> → clear the stage, shut down lighting, close the theater</li>
+</ul>
+<p>Let’s look at how <code>createApp</code> builds that manager.</p>
+<hr />
+<h2>3. The <code>createApp</code> function, piece by piece</h2>
+<p>Here is <code>createApp</code> from <code>app.js</code>, broken into chunks.</p>
+<h3>3.1 Signature and internal state</h3>
+<pre><code class="language-js">export function createApp(RootComponent, props = {}, options = {}) {
+  let parentEl = null
+  let isMounted = false
+  let vdom = null
+</code></pre>
+<ul>
+<li><code>RootComponent</code> – the top‑level component class, created with <code>defineComponent</code> from <a href="03_definecomponent_component.html">defineComponent / Component</a>.</li>
+<li><code>props</code> – initial props for that root component.</li>
+<li><code>options</code> – extra configuration, currently only <code>router</code>.</li>
+</ul>
+<p>Internal variables:</p>
+<ul>
+<li><code>parentEl</code> – the actual DOM element we mount into (<code>&lt;div id=&quot;app&quot;&gt;</code> or similar).</li>
+<li><code>isMounted</code> – boolean guard so you don’t mount twice or unmount before mounting.</li>
+<li><code>vdom</code> – the root VNode for the app (created with <code>h</code>).</li>
+</ul>
+<h3>3.2 Building the application context</h3>
+<pre><code class="language-js">  // The application context is injected into every component mounted in the app.
+  // This gives components access to objects that are global to the application.
+  const context = {
+    router: options.router || new NoopRouter(),
+  }
+</code></pre>
+<p>This is the <strong>application context</strong>:</p>
+<ul>
+<li>A plain object shared by all components.</li>
+<li>For now, it only has <code>router</code>, but you could imagine adding <code>store</code>, <code>i18n</code>, etc.</li>
+</ul>
+<p>Behavior:</p>
+<ul>
+<li>
+<p>If you pass <code>options.router</code>, that router is used.</p>
+</li>
+<li>
+<p>If you don’t, the framework uses a <code>NoopRouter</code> from <code>router.js</code>:</p>
+<pre><code class="language-js">export class NoopRouter {
+  init() {}
+  destroy() {}
+  navigateTo() {}
+  back() {}
+  forward() {}
+  subscribe() {}
+  unsubscribe() {}
+}
+</code></pre>
+<p>This behaves like a dummy router: all methods exist but do nothing. Components that expect <code>this.appContext.router</code> can safely call methods without crashing, they just won’t navigate.</p>
+</li>
+</ul>
+<p>Analogy: the application context is a <strong>backstage toolbox</strong> shared by all actors. Right now, it holds a “router” tool: maybe a real one, maybe just a fake plastic toy if you didn’t configure routing.</p>
+<h3>3.3 Reset helper</h3>
+<pre><code class="language-js">  function reset() {
+    parentEl = null
+    isMounted = false
+    vdom = null
+  }
+</code></pre>
+<p>Simple cleanup:</p>
+<ul>
+<li>Set all internal references back to neutral values.</li>
+<li>Called from <code>unmount</code> after the DOM is destroyed and the router is shut down.</li>
+</ul>
+<h3>3.4 Returning the <code>mount</code> and <code>unmount</code> methods</h3>
+<pre><code class="language-js">  return {
+    mount(_parentEl) {
+      if (isMounted) {
+        throw new Error('The application is already mounted')
+      }
+
+      parentEl = _parentEl
+      vdom = h(RootComponent, props)
+      mountDOM(vdom, parentEl, null, { appContext: context })
+
+      context.router.init()
+
+      isMounted = true
+    },
+
+    unmount() {
+      if (!isMounted) {
+        throw new Error('The application is not mounted')
+      }
+
+      destroyDOM(vdom)
+      context.router.destroy()
+      reset()
+    },
+  }
+}
+</code></pre>
+<p>We’ll break each method down.</p>
+<hr />
+<h2>4. <code>mount</code>: starting the show</h2>
+<p><code>mount(parentEl)</code> is how you boot the app.</p>
+<pre><code class="language-js">mount(_parentEl) {
+  if (isMounted) {
+    throw new Error('The application is already mounted')
+  }
+
+  parentEl = _parentEl
+  vdom = h(RootComponent, props)
+  mountDOM(vdom, parentEl, null, { appContext: context })
+
+  context.router.init()
+
+  isMounted = true
+}
+</code></pre>
+<h3>4.1 Guard against double mount</h3>
+<pre><code class="language-js">if (isMounted) {
+  throw new Error('The application is already mounted')
+}
+</code></pre>
+<ul>
+<li>Protects you from accidental multiple initializations.</li>
+<li>Once mounted, you must <code>unmount</code> before calling <code>mount</code> again.</li>
+</ul>
+<h3>4.2 Store the host element</h3>
+<pre><code class="language-js">parentEl = _parentEl
+</code></pre>
+<ul>
+<li>This is typically something like <code>document.getElementById('app')</code>.</li>
+<li>All root DOM nodes for your app go inside this element.</li>
+</ul>
+<h3>4.3 Create the root VNode</h3>
+<pre><code class="language-js">vdom = h(RootComponent, props)
+</code></pre>
+<p>Using <code>h</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>:</p>
+<ul>
+<li><code>tag</code> is the <code>RootComponent</code> class (a function constructor).</li>
+<li>So <code>h</code> creates a VNode with <code>type: 'component'</code> and <code>props: props</code>.</li>
+<li>No explicit children here; the root component may have its own slots, but <code>createApp</code> doesn’t pass any external content.</li>
+</ul>
+<p>This is your <strong>virtual root</strong>: a <em>blueprint</em> for the root component, not DOM yet.</p>
+<h3>4.4 Mount VDOM to real DOM, injecting app context</h3>
+<pre><code class="language-js">mountDOM(vdom, parentEl, null, { appContext: context })
+</code></pre>
+<p>Now we cross into the DOM layer from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</p>
+<p>Recall <code>mountDOM</code> signature:</p>
+<pre><code class="language-js">export function mountDOM(vdom, parentEl, index, hostComponent = null)
+</code></pre>
+<p>Here <code>hostComponent</code> is passed as <code>{ appContext: context }</code>, a small object that has:</p>
+<ul>
+<li>No component lifecycle methods,</li>
+<li>No state,</li>
+<li>Only an <code>appContext</code> field.</li>
+</ul>
+<p>Why pass this instead of <code>null</code>?</p>
+<p>Inside <code>mountDOM</code>, when it sees a component VNode, it calls <code>createComponentNode</code>:</p>
+<pre><code class="language-js">function createComponentNode(vdom, parentEl, index, hostComponent) {
+  const { tag: Component, children } = vdom
+  const { props, events } = extractPropsAndEvents(vdom)
+  const component = new Component(props, events, hostComponent)
+  component.setExternalContent(children)
+  component.setAppContext(hostComponent?.appContext ?? {})
+
+  component.mount(parentEl, index)
+  vdom.component = component
+  vdom.el = component.firstElement
+}
+</code></pre>
+<p>Two important details:</p>
+<ul>
+<li><code>new Component(props, events, hostComponent)</code>:
+<ul>
+<li><code>hostComponent</code> becomes this instance’s <code>parentComponent</code>.</li>
+<li>For the root, that parent is the <code>{ appContext: context }</code> object.</li>
+</ul>
+</li>
+<li><code>component.setAppContext(hostComponent?.appContext ?? {})</code>:
+<ul>
+<li>For the root, <code>hostComponent.appContext</code> is exactly the <code>context</code> we built in <code>createApp</code>.</li>
+<li>So <code>this.appContext</code> inside the root component is that shared object.</li>
+<li>For children, <code>hostComponent</code> is a real <code>Component</code> instance, and <code>hostComponent.appContext</code> is the same context, so it flows down the tree.</li>
+</ul>
+</li>
+</ul>
+<p>Analogy: you hand the <strong>first actor</strong> a little badge that says “I’m part of Show #1, use these tools.” That actor then gives the same badge to every child actor they hire. The badge is <code>appContext</code>, and you attach it at the root via <code>hostComponent</code>.</p>
+<p>This is how components like <code>RouterOutlet</code> and <code>RouterLink</code> can access the router:</p>
+<pre><code class="language-js">// inside router-components.js
+this.appContext.router
+</code></pre>
+<p>without you ever passing the router as a normal prop.</p>
+<h3>4.5 Initialize the router</h3>
+<pre><code class="language-js">context.router.init()
+</code></pre>
+<p>From <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>, <code>HashRouter.init()</code>:</p>
+<ul>
+<li>Ensures there is a hash in the URL (<code>#/</code> if empty).</li>
+<li>Starts listening to <code>popstate</code> events.</li>
+<li>Matches the current route and notifies subscribers.</li>
+</ul>
+<p>If your <code>options.router</code> was a real <code>HashRouter</code>, this kicks routing into gear. If it was a <code>NoopRouter</code>, this is a no‑op.</p>
+<p>Important: <code>mountDOM</code> must run before <code>router.init()</code> so that:</p>
+<ul>
+<li>Components like <code>RouterOutlet</code> exist and can subscribe in their <code>onMounted</code> hooks.</li>
+<li>The router’s initial route match will have somewhere to send its “route changed” event.</li>
+</ul>
+<h3>4.6 Mark app as mounted</h3>
+<pre><code class="language-js">isMounted = true
+</code></pre>
+<p>From now on:</p>
+<ul>
+<li>A second <code>mount()</code> call throws.</li>
+<li><code>unmount()</code> is allowed.</li>
+</ul>
+<hr />
+<h2>5. <code>unmount</code>: stopping the show</h2>
+<p>When you want to take everything down—maybe you’re hot‑reloading in development, or your SPA is being removed from a page—you call <code>unmount()</code>:</p>
+<pre><code class="language-js">unmount() {
+  if (!isMounted) {
+    throw new Error('The application is not mounted')
+  }
+
+  destroyDOM(vdom)
+  context.router.destroy()
+  reset()
+}
+</code></pre>
+<h3>5.1 Guard against unmounting before mount</h3>
+<pre><code class="language-js">if (!isMounted) {
+  throw new Error('The application is not mounted')
+}
+</code></pre>
+<p>No effect if you call <code>unmount</code> on a fresh app object.</p>
+<h3>5.2 Destroy the DOM and components</h3>
+<pre><code class="language-js">destroyDOM(vdom)
+</code></pre>
+<p>From <a href="04_mountdom_destroydom_patchdom.html">destroyDOM</a> and <code>destroy-dom.js</code>:</p>
+<ul>
+<li>Walks the entire VNode tree starting at <code>vdom</code>.</li>
+<li>For each node:
+<ul>
+<li>Removes DOM nodes from the document.</li>
+<li>Detaches event listeners (via <code>removeEventListeners</code>).</li>
+<li>For component nodes:
+<ul>
+<li>Calls <code>component.unmount()</code>:
+<ul>
+<li>Calls <code>destroyDOM</code> on the component’s inner tree.</li>
+<li>Unsubscribes dispatcher subscriptions (component events).</li>
+</ul>
+</li>
+<li>Schedules <code>component.onUnmounted()</code> through the scheduler (<a href="09_scheduler_nexttick.html">Scheduler / nextTick</a>).</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>By the time <code>destroyDOM</code> returns, all DOM created for your app has been removed, and all component instances have been told to clean up.</p>
+<h3>5.3 Destroy the router</h3>
+<pre><code class="language-js">context.router.destroy()
+</code></pre>
+<p>From <code>HashRouter.destroy()</code>:</p>
+<ul>
+<li>Removes the <code>popstate</code> event listener.</li>
+<li>Unsubscribes all route change handlers (including <code>RouterOutlet</code>).</li>
+</ul>
+<p>From <code>NoopRouter.destroy()</code>:</p>
+<ul>
+<li>Does nothing.</li>
+</ul>
+<p>Now the router no longer affects global state or listens to browser events.</p>
+<h3>5.4 Reset the internal app state</h3>
+<pre><code class="language-js">reset()
+</code></pre>
+<p>Back to:</p>
+<ul>
+<li><code>parentEl = null</code></li>
+<li><code>isMounted = false</code></li>
+<li><code>vdom = null</code></li>
+</ul>
+<p>If you wanted, you could call <code>mount()</code> again with a fresh container, perhaps with different initial <code>props</code> if you built a new <code>Application</code> via <code>createApp</code>.</p>
+<hr />
+<h2>6. How everything fits: app, root component, DOM, router</h2>
+<p>Let’s visualize one full cycle:</p>
+<ul>
+<li>You create the app.</li>
+<li>You mount the app.</li>
+<li>The root component mounts, children mount, router initializes.</li>
+<li>Later, you unmount the app, tearing everything down.</li>
+</ul>
+<p>We’ll show five participants:</p>
+<ul>
+<li><code>UserCode</code> – your main file calling <code>createApp</code>, <code>mount</code>, <code>unmount</code></li>
+<li><code>AppMgr</code> – the <code>Application</code> object returned by <code>createApp</code></li>
+<li><code>RootComp</code> – the root component instance</li>
+<li><code>DomEngine</code> – <code>mountDOM</code> and <code>destroyDOM</code></li>
+<li><code>Router</code> – the <code>HashRouter</code> or <code>NoopRouter</code></li>
+</ul>
+<pre class="mermaid">sequenceDiagram
+  participant UserCode as User
+  participant AppMgr as App
+  participant RootComp as Root
+  participant DomEngine as Dom
+  participant Router as Router
+
+  UserCode->>AppMgr: Create app with root and options
+  UserCode->>AppMgr: Mount into container element
+  AppMgr->>DomEngine: Mount root vnode into container
+  DomEngine->>RootComp: Create root component instance
+  AppMgr->>Router: Initialize routing system
+  UserCode->>AppMgr: Unmount application
+  AppMgr->>DomEngine: Destroy root vnode and children
+  AppMgr->>Router: Destroy routing system
+</pre>
+<p>Tie to previous chapters:</p>
+<ul>
+<li><code>Root</code> is a <code>Component</code> class instance from <a href="03_definecomponent_component.html">defineComponent / Component</a>.</li>
+<li><code>Dom</code> is <code>mountDOM</code> / <code>destroyDOM</code> / <code>patchDOM</code> from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</li>
+<li><code>Router</code> is <code>HashRouter</code> or <code>NoopRouter</code> from <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>.</li>
+<li>The actors inside <code>Dom</code> and <code>Root</code> use dispatchers, slots, route matchers, and the scheduler as described in <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>, <a href="06_slots_and_fillslots.html">Slots and fillSlots</a>, <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a>, and <a href="09_scheduler_nexttick.html">Scheduler / nextTick</a>.</li>
+</ul>
+<hr />
+<h2>7. A complete example: wiring everything together</h2>
+<p>Let’s write the kind of code you’d have in a small app’s <code>main.js</code>.</p>
+<h3>7.1 Define some routes</h3>
+<pre><code class="language-js">// routes.js
+import { Home } from './Home'
+import { User } from './User'
+import { NotFound } from './NotFound'
+
+export const routes = [
+  { path: '/', component: Home },
+  { path: '/users/:userId', component: User },
+  { path: '*', component: NotFound },
+]
+</code></pre>
+<p><code>Route</code> structure and matching come from <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a>.</p>
+<h3>7.2 Define the root component</h3>
+<pre><code class="language-js">// App.js
+import { defineComponent } from './component'
+import { h } from './h'
+import { RouterLink, RouterOutlet } from './router-components'
+
+export const App = defineComponent({
+  render() {
+    return h('div', null, [
+      h('h1', null, ['My App']),
+      h('nav', null, [
+        h(RouterLink, { to: '/' }, ['Home']),
+        h(RouterLink, { to: '/users/42' }, ['User 42']),
+      ]),
+      h(RouterOutlet),
+    ])
+  },
+})
+</code></pre>
+<p>This uses:</p>
+<ul>
+<li>Components from <a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+<li><code>h</code>, <code>RouterLink</code>, <code>RouterOutlet</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a> and <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a></li>
+</ul>
+<h3>7.3 Create the router and the app</h3>
+<pre><code class="language-js">// main.js
+import { createApp, HashRouter } from './index'
+import { App } from './App'
+import { routes } from './routes'
+
+const router = new HashRouter(routes)
+
+const app = createApp(App, { title: 'Hello world' }, { router })
+app.mount(document.getElementById('app'))
+
+// Later, if needed:
+// app.unmount()
+</code></pre>
+<p>What happens:</p>
+<ul>
+<li><code>new HashRouter(routes)</code>:
+<ul>
+<li>Validates each route via <code>validateRoute</code>.</li>
+<li>Creates a RouteMatcher for each via <code>makeRouteMatcher</code>.</li>
+</ul>
+</li>
+<li><code>createApp(App, props, { router })</code>:
+<ul>
+<li>Stores <code>RootComponent = App</code>, <code>props = { title: 'Hello world' }</code>, <code>options.router = router</code>.</li>
+<li>Builds <code>context = { router }</code>.</li>
+</ul>
+</li>
+<li><code>app.mount(container)</code>:
+<ul>
+<li>Creates the root VNode: <code>h(App, { title: 'Hello world' })</code>.</li>
+<li>Calls <code>mountDOM</code> with <code>hostComponent = { appContext: context }</code>.
+<ul>
+<li>This ensures <code>App</code> and every child component see <code>this.appContext.router</code>.</li>
+</ul>
+</li>
+<li>Calls <code>router.init()</code>, which:
+<ul>
+<li>Ensures a hash exists.</li>
+<li>Listens to <code>popstate</code>.</li>
+<li>Matches the initial route and notifies <code>RouterOutlet</code>.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>From this point on:</p>
+<ul>
+<li>DOM updates are handled by <code>mountDOM</code> and <code>patchDOM</code>.</li>
+<li>Component state updates happen through <code>updateState</code>.</li>
+<li>Component events use the <code>Dispatcher</code>.</li>
+<li>Slots are filled by <code>fillSlots</code>.</li>
+<li>Routing is kept in sync with the hash by <code>HashRouter</code>.</li>
+<li>Lifecycle hooks run through the scheduler’s job queue.</li>
+<li>And the Application object is your single control handle for the whole tree.</li>
+</ul>
+<hr />
+<h2>8. Recap</h2>
+<p><code>createApp</code> is the final bit of scaffolding that turns all the framework pieces into a <strong>real application</strong>:</p>
+<ul>
+<li>It takes:
+<ul>
+<li>A root component class (<code>RootComponent</code>)</li>
+<li>Initial props for that component</li>
+<li>An options object with global services (currently <code>router</code>)</li>
+</ul>
+</li>
+<li>It builds an <strong>application context</strong>:
+<ul>
+<li>A shared object (<code>context</code>) injected into every component as <code>this.appContext</code></li>
+<li>Starts with <code>router</code>, using <code>HashRouter</code> or <code>NoopRouter</code></li>
+</ul>
+</li>
+<li>It returns an <strong>Application</strong>:
+<ul>
+<li><code>mount(parentEl)</code>:
+<ul>
+<li>Creates a root VNode with <code>h(RootComponent, props)</code></li>
+<li>Calls <code>mountDOM</code> with a host object carrying <code>appContext</code></li>
+<li>Calls <code>router.init()</code> to start routing</li>
+</ul>
+</li>
+<li><code>unmount()</code>:
+<ul>
+<li>Calls <code>destroyDOM</code> to tear down all components, DOM, and handlers</li>
+<li>Calls <code>router.destroy()</code> to stop listening to browser navigation</li>
+<li>Clears internal references so the Application can’t be misused</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>From the actor analogy: components are actors, the DOM is the stage, the router is the script, the scheduler coordinates cues—and <code>createApp</code> is the stage manager that puts it all together.</p>
+<p>Now that you’ve seen how this tiny framework hangs together from VNodes to full apps, the next natural question is: how would you <strong>extend</strong> or <strong>adapt</strong> this architecture for your own ideas—new global services, different routers, or integration with other tools? That exploration is where your own experiments begin.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="09_scheduler_nexttick.html">&larr; Scheduler / nextTick</a></span>
+    <span>&nbsp;</span>
+  </nav>
+</body>
+</html>

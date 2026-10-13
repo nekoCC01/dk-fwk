@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dispatcher and component events (emit) — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 5: Dispatcher and component events (emit)</h1>
+<p>Imagine a child component that wants to “tell” its parent something:</p>
+<ul>
+<li>A <code>&lt;TodoItem&gt;</code> toggles from incomplete to complete.</li>
+<li>A <code>&lt;Modal&gt;</code> reports that the user clicked “Confirm”.</li>
+<li>A <code>&lt;SearchBox&gt;</code> announces that the user submitted a query.</li>
+</ul>
+<p>You <em>could</em> pass a function down as a prop and call it directly:</p>
+<pre><code class="language-js">// Parent render
+h(TodoItem, { onToggle: (id) =&gt; this.handleToggle(id) })
+</code></pre>
+<pre><code class="language-js">// Child
+this.props.onToggle(this.props.id)
+</code></pre>
+<p>This <em>works</em>, but it couples the child tightly to the parent’s prop names and structure. As your app grows, these “callback props” multiply and your components start to look like electrical panels full of wires.</p>
+<p>This framework takes a slightly different approach inside components: a tiny <strong>Dispatcher</strong> that acts like a <strong>message switchboard</strong> between a child and whoever cares about its events.</p>
+<ul>
+<li>Children <strong>emit</strong> named events with <code>this.emit('save', payload)</code>.</li>
+<li>Parents <strong>subscribe</strong> to those names when they create the child.</li>
+<li>The Dispatcher inside the child delivers the message in order to all subscribers, and the parent’s handler runs in the right context.</li>
+</ul>
+<p>In this chapter you’ll see:</p>
+<ul>
+<li>How the generic <a href="./dispatcher.js"><code>Dispatcher</code></a> works (pub/sub in miniature).</li>
+<li>How <code>defineComponent</code> wires a <code>Dispatcher</code> into each component instance.</li>
+<li>How <code>emit</code> lets a child send messages to its parent without knowing who listens.</li>
+<li>How parents pass event handlers down using <code>h</code> (from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>).</li>
+<li>How this fits with the rest of the framework (state, VNodes, DOM updates).</li>
+</ul>
+<hr />
+<h2>1. Why not just call parent methods directly?</h2>
+<p>Picture a tree of components:</p>
+<ul>
+<li><code>App</code>
+<ul>
+<li><code>TodoList</code>
+<ul>
+<li><code>TodoItem</code> x 100</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>When a <code>TodoItem</code> toggles, you need to update <strong>list state</strong> in <code>TodoList</code>, maybe also update a <strong>summary</strong> in <code>App</code>.</p>
+<p>Three naive options:</p>
+<ol>
+<li>
+<p><strong>Direct parent calls</strong></p>
+<pre><code class="language-js">// In TodoItem
+this.parentComponent.handleToggle(this.id)
+</code></pre>
+<p>Problems:</p>
+<ul>
+<li>Child must know its parent has <code>handleToggle</code>.</li>
+<li>If a new parent wraps <code>TodoItem</code>, you must keep threading calls correctly.</li>
+<li>Very tight coupling.</li>
+</ul>
+</li>
+<li>
+<p><strong>Global event bus</strong></p>
+<pre><code class="language-js">globalBus.dispatch('todo-toggled', { id: this.id })
+</code></pre>
+<p>Problems:</p>
+<ul>
+<li>Everything is global. Hard to trace who listens.</li>
+<li>Names can easily collide.</li>
+<li>Hard to test in isolation.</li>
+</ul>
+</li>
+<li>
+<p><strong>Callback props everywhere</strong></p>
+<pre><code class="language-js">// Parent
+h(TodoItem, { onToggle: this.handleToggle })
+
+// Child
+this.props.onToggle(this.props.id)
+</code></pre>
+<p>Better, but:</p>
+<ul>
+<li>You end up with many props like <code>onConfirm</code>, <code>onClose</code>, <code>onToggle</code>.</li>
+<li>You still tightly bind your child to prop names and shapes.</li>
+</ul>
+</li>
+</ol>
+<p>Instead, this framework gives each component a <strong>local message switchboard</strong>:</p>
+<ul>
+<li>The <strong>parent</strong> says: “If my child emits <code>'toggle'</code>, run this function.”</li>
+<li>The <strong>child</strong> just says: “I emit <code>'toggle'</code>” with some data.</li>
+</ul>
+<p>They meet on a string name, not on a particular prop name. That’s the Dispatcher’s job.</p>
+<hr />
+<h2>2. The Dispatcher: a tiny in‑memory switchboard</h2>
+<p>The <code>Dispatcher</code> is a general-purpose pub/sub tool, used both:</p>
+<ul>
+<li>Inside components for <code>emit</code> (child → parent).</li>
+<li>In the router for route change notifications (see <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>).</li>
+</ul>
+<p>Think of it like a bulletin board:</p>
+<ul>
+<li>Each “topic” is a command name (<code>'toggle'</code>, <code>'save'</code>, <code>'router-event'</code>).</li>
+<li>Subscribers pin their phone numbers under one topic.</li>
+<li>When a note is posted to that topic, everyone under it gets called.</li>
+</ul>
+<p>Here is the heart of <code>dispatcher.js</code>, broken into small pieces.</p>
+<h3>2.1 Subscribing to a named command</h3>
+<pre><code class="language-js">export class Dispatcher {
+  #subs = new Map()
+  #afterHandlers = []
+
+  subscribe(commandName, handler) {
+    if (!this.#subs.has(commandName)) {
+      this.#subs.set(commandName, [])
+    }
+
+    const handlers = this.#subs.get(commandName)
+    if (handlers.includes(handler)) {
+      return () =&gt; {}
+    }
+
+    handlers.push(handler)
+
+    return () =&gt; {
+      const idx = handlers.indexOf(handler)
+      handlers.splice(idx, 1)
+    }
+  }
+}
+</code></pre>
+<p>Key ideas:</p>
+<ul>
+<li>
+<p><code>#subs</code> maps <code>&quot;commandName&quot;</code> → <code>[handler1, handler2, ...]</code>.</p>
+</li>
+<li>
+<p><code>subscribe(name, handler)</code>:</p>
+<ul>
+<li>Creates the array if needed.</li>
+<li>Avoids duplicate handlers.</li>
+<li>Returns an <strong>unsubscribe function</strong> that removes this handler.</li>
+</ul>
+</li>
+</ul>
+<p>So you can do:</p>
+<pre><code class="language-js">const dispatcher = new Dispatcher()
+
+const unsubscribe = dispatcher.subscribe('save', (payload) =&gt; {
+  console.log('Saved', payload)
+})
+
+// Later
+unsubscribe()
+</code></pre>
+<h3>2.2 Running “after every command” handlers</h3>
+<pre><code class="language-js">afterEveryCommand(handler) {
+  this.#afterHandlers.push(handler)
+
+  return () =&gt; {
+    const idx = this.#afterHandlers.indexOf(handler)
+    this.#afterHandlers.splice(idx, 1)
+  }
+}
+</code></pre>
+<p>This lets something observe <strong>all</strong> commands, no matter the name. The router uses a single command name (<code>'router-event'</code>), so this hook isn’t heavily used there, but it’s available if you ever wanted:</p>
+<ul>
+<li>Logging: “A command just ran”</li>
+<li>Metrics: increment a counter on every dispatch</li>
+</ul>
+<p>Same pattern: return an unsubscribe function.</p>
+<h3>2.3 Dispatching a command</h3>
+<pre><code class="language-js">dispatch(commandName, payload) {
+  if (this.#subs.has(commandName)) {
+    this.#subs.get(commandName).forEach((handler) =&gt; handler(payload))
+  } else {
+    console.warn(`No handlers for command: ${commandName}`)
+  }
+
+  this.#afterHandlers.forEach((handler) =&gt; handler())
+}
+</code></pre>
+<p>Step by step:</p>
+<ol>
+<li>If there are subscribers for <code>commandName</code>, call them in order with <code>payload</code>.</li>
+<li>Otherwise log a warning.</li>
+<li>Call every <code>afterEveryCommand</code> handler.</li>
+</ol>
+<p>Note that <code>Dispatcher</code> does <strong>not</strong> know or care about components or DOM. It is just a map of names to functions plus a method to run them.</p>
+<hr />
+<h2>3. Wiring Dispatcher into components</h2>
+<p>In <a href="03_definecomponent_component.html">defineComponent / Component</a>, each component instance gets its <strong>own</strong> Dispatcher:</p>
+<pre><code class="language-js">class Component {
+  #dispatcher = new Dispatcher()
+  #subscriptions = []
+  #eventHandlers = null
+  #parentComponent = null
+
+  constructor(props = {}, eventHandlers = {}, parentComponent = null) {
+    this.props = props
+    this.state = state ? state(props) : {}
+    this.#eventHandlers = eventHandlers
+    this.#parentComponent = parentComponent
+  }
+
+  emit(eventName, payload) {
+    this.#dispatcher.dispatch(eventName, payload)
+  }
+}
+</code></pre>
+<p>So when you call <code>this.emit(...)</code> inside a component, you’re really doing:</p>
+<pre><code class="language-js">this.#dispatcher.dispatch(eventName, payload)
+</code></pre>
+<p>But where do the <strong>subscribers</strong> come from? That’s the parent’s job.</p>
+<h3>3.1 Parent passes event handlers through VNode props</h3>
+<p>In <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a> you saw that <code>h</code> accepts arbitrary props. For components, those props are split into:</p>
+<ul>
+<li>“Normal props” (data)</li>
+<li>“Event handlers” (functions the parent wants to run when the child emits)</li>
+</ul>
+<p>The splitter is <code>extractPropsAndEvents</code> (from <code>utils/props.js</code>, not shown here but conceptually simple):</p>
+<ul>
+<li>Keys starting with <code>on</code> but not DOM events? Could map to component events.</li>
+<li>The book’s code treats these as event handlers passed to the component constructor.</li>
+</ul>
+<p>When <code>mountDOM</code> encounters a component VNode, it does this:</p>
+<pre><code class="language-js">function createComponentNode(vdom, parentEl, index, hostComponent) {
+  const { tag: Component, children } = vdom
+  const { props, events } = extractPropsAndEvents(vdom)
+  const component = new Component(props, events, hostComponent)
+
+  component.setExternalContent(children)
+  component.setAppContext(hostComponent?.appContext ?? {})
+
+  component.mount(parentEl, index)
+  vdom.component = component
+  vdom.el = component.firstElement
+}
+</code></pre>
+<p>Important bits:</p>
+<ul>
+<li><code>events</code> is whatever <code>extractPropsAndEvents</code> found as <strong>component-level event handlers</strong> on the VNode.</li>
+<li>The component instance gets that <code>events</code> object as <code>#eventHandlers</code>.</li>
+<li><code>parentComponent</code> is passed as <code>hostComponent</code>, so handlers can run with the parent as <code>this</code>.</li>
+</ul>
+<p>The component then uses those handlers to subscribe to its own <code>Dispatcher</code>.</p>
+<h3>3.2 Subscribing parent handlers to child events</h3>
+<p>When the child component mounts, it wires handlers:</p>
+<pre><code class="language-js">mount(hostEl, index = null) {
+  // ... render and mount DOM
+  this.#wireEventHandlers()
+
+  this.#isMounted = true
+  this.#hostEl = hostEl
+}
+</code></pre>
+<p>The private wiring methods:</p>
+<pre><code class="language-js">#wireEventHandlers() {
+  this.#subscriptions = Object.entries(this.#eventHandlers).map(
+    ([eventName, handler]) =&gt; this.#wireEventHandler(eventName, handler)
+  )
+}
+
+#wireEventHandler(eventName, handler) {
+  return this.#dispatcher.subscribe(eventName, (payload) =&gt; {
+    if (this.#parentComponent) {
+      handler.call(this.#parentComponent, payload)
+    } else {
+      handler(payload)
+    }
+  })
+}
+</code></pre>
+<p>Walkthrough:</p>
+<ol>
+<li>
+<p><code>#eventHandlers</code> is an object like:</p>
+<pre><code class="language-js">{
+  toggle: (payload) =&gt; { /* parent logic */ },
+  delete: (payload) =&gt; { /* parent logic */ },
+}
+</code></pre>
+</li>
+<li>
+<p>For each <code>[eventName, handler]</code>, subscribe to the component’s dispatcher.</p>
+</li>
+<li>
+<p>On dispatch:</p>
+<ul>
+<li>If the component has a <code>#parentComponent</code>, call the handler with <code>this</code> bound to the <strong>parent component instance</strong>.</li>
+<li>Otherwise (top-level root component), just call <code>handler(payload)</code>.</li>
+</ul>
+</li>
+<li>
+<p>The <code>subscribe</code> method returns an unsubscribe function, so <code>#subscriptions</code> is a list of cleanup callbacks. On unmount:</p>
+<pre><code class="language-js">unmount() {
+  if (!this.#isMounted) {
+    throw new Error('Component is not mounted')
+  }
+
+  destroyDOM(this.#vdom)
+  this.#subscriptions.forEach((unsubscribe) =&gt; unsubscribe())
+
+  this.#vdom = null
+  this.#isMounted = false
+  this.#hostEl = null
+  this.#subscriptions = []
+}
+</code></pre>
+<p>All event subscriptions are removed, preventing leaks.</p>
+</li>
+</ol>
+<p>So each component:</p>
+<ul>
+<li>Owns a private Dispatcher.</li>
+<li>Subscribes parent handlers to it during mount.</li>
+<li>Unsubscribes them during unmount.</li>
+</ul>
+<p>Children never reach up manually; they just <code>emit</code>.</p>
+<hr />
+<h2>4. Emitting from a child component</h2>
+<p>From the child’s point of view, emitting is a single method call:</p>
+<pre><code class="language-js">emit(eventName, payload) {
+  this.#dispatcher.dispatch(eventName, payload)
+}
+</code></pre>
+<p>As the component author, you do something like:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+
+export const TodoItem = defineComponent({
+  state() {
+    return { done: false }
+  },
+
+  toggle() {
+    const done = !this.state.done
+    this.updateState({ done })
+    this.emit('toggle', { id: this.props.id, done })
+  },
+
+  render() {
+    const { done } = this.state
+    const label = done ? 'Undo' : 'Complete'
+
+    return h('button', { on: { click: () =&gt; this.toggle() } }, [label])
+  },
+})
+</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>this.emit('toggle', payload)</code> does not know or care who is listening.</li>
+<li>The event name <code>'toggle'</code> is just a <strong>string channel</strong>.</li>
+<li>The parent decides whether to subscribe to <code>'toggle'</code> for this child.</li>
+</ul>
+<p>No direct calls to parent props or methods. Your component just broadcasts: “I toggled this item.”</p>
+<hr />
+<h2>5. Listening from a parent component</h2>
+<p>Now the parent can create a <code>TodoItem</code> and attach handlers when it uses <code>h</code>.</p>
+<p>Using <code>h</code> with a component VNode is described in <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>. When you pass “event handlers” via props, <code>extractPropsAndEvents</code> splits them out, and <code>defineComponent</code> wires them up through the Dispatcher.</p>
+<p>A simple parent:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+import { TodoItem } from './TodoItem'
+
+export const TodoList = defineComponent({
+  state() {
+    return {
+      items: [
+        { id: 1, done: false },
+        { id: 2, done: true },
+      ],
+    }
+  },
+
+  handleToggle({ id, done }) {
+    const items = this.state.items.map((item) =&gt;
+      item.id === id ? { ...item, done } : item
+    )
+
+    this.updateState({ items })
+  },
+
+  render() {
+    const { items } = this.state
+
+    return h(
+      'ul',
+      null,
+      items.map((item) =&gt;
+        h(TodoItem, {
+          id: item.id,
+          key: item.id,
+          onToggle: (payload) =&gt; this.handleToggle(payload),
+        })
+      )
+    )
+  },
+})
+</code></pre>
+<p>How this becomes event wiring:</p>
+<ol>
+<li>
+<p>The parent’s <code>render</code> returns VNodes for <code>TodoItem</code> with a prop like <code>onToggle</code>.</p>
+</li>
+<li>
+<p><code>h</code> builds component VNodes.</p>
+</li>
+<li>
+<p><code>mountDOM</code> calls <code>extractPropsAndEvents</code> on each component VNode:</p>
+<ul>
+<li>“Regular” props → <code>props</code>.</li>
+<li>Event-related props → <code>events</code> (for the child).</li>
+</ul>
+</li>
+<li>
+<p><code>createComponentNode</code> constructs <code>new Component(props, events, hostComponent)</code>:</p>
+<ul>
+<li><code>props</code> includes data like <code>id</code>.</li>
+<li><code>events</code> maps <code>'toggle'</code> (normalized from <code>onToggle</code>) to the handler <code>payload =&gt; this.handleToggle(payload)</code>.</li>
+</ul>
+</li>
+<li>
+<p>Inside the <code>TodoItem</code> instance:</p>
+<ul>
+<li><code>#eventHandlers</code> is set to <code>events</code>.</li>
+<li>During <code>mount</code>, <code>#wireEventHandlers</code> subscribes each handler to the Dispatcher.</li>
+</ul>
+</li>
+<li>
+<p>When <code>TodoItem</code> calls <code>this.emit('toggle', { id, done })</code>:</p>
+<ul>
+<li>The Dispatcher finds the handler for <code>'toggle'</code>.</li>
+<li>It calls the handler with <code>payload</code>.</li>
+<li>Because <code>TodoItem</code> has a <code>#parentComponent</code> (<code>TodoList</code>), <code>handler.call(this.#parentComponent, payload)</code> binds <code>this</code> inside the handler to the parent component.</li>
+</ul>
+</li>
+</ol>
+<p>In other words:</p>
+<ul>
+<li>Child calls <code>this.emit('toggle', payload)</code>.</li>
+<li>Parent’s <code>handleToggle</code> runs with <code>this</code> = <code>TodoList</code> instance.</li>
+</ul>
+<p>Your parent code stays clean and local:</p>
+<pre><code class="language-js">handleToggle({ id, done }) {
+  // `this` is TodoList
+  // update state as usual
+}
+</code></pre>
+<p>You never manually subscribe; the framework does it based on props you pass to <code>h</code>.</p>
+<hr />
+<h2>6. Putting it together: event flow overview</h2>
+<p>To visualize the whole flow from parent to child and back, here is a sequence diagram.</p>
+<p>We will show four participants:</p>
+<ul>
+<li><code>Parent</code> – the parent component instance</li>
+<li><code>Child</code> – the child component instance</li>
+<li><code>Switchboard</code> – the child’s Dispatcher</li>
+<li><code>DomLayer</code> – the <code>mountDOM</code> logic creating the child</li>
+</ul>
+<pre class="mermaid">sequenceDiagram
+  participant Parent as Parent
+  participant DomLayer as DomLayer
+  participant Child as Child
+  participant Switchboard as Switchboard
+
+  Parent->>DomLayer: Create child vnode with event handlers
+  DomLayer->>Child: Construct child with props and handlers
+  DomLayer->>Child: Mount child and wire handlers
+  Child->>Switchboard: Emit event name and payload
+  Switchboard->>Parent: Call parent handler with payload
+</pre>
+<p>Connect this to earlier chapters:</p>
+<ul>
+<li>The “Create child vnode” step is via <code>h</code> and VNodes from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a> and <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>.</li>
+<li>The “Mount child” step runs through <code>mountDOM</code> and <code>createComponentNode</code> from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</li>
+<li>The <code>Child</code> and <code>Parent</code> boxes are <code>Component</code> instances from <a href="03_definecomponent_component.html">defineComponent / Component</a>.</li>
+<li>The <code>Switchboard</code> is the Dispatcher described at the start of this chapter.</li>
+</ul>
+<hr />
+<h2>7. Comparison: DOM events vs component events</h2>
+<p>It’s important to distinguish two different kinds of events in this framework:</p>
+<ol>
+<li>
+<p><strong>DOM events</strong> – browser-level interactions like <code>'click'</code>, <code>'input'</code>, <code>'submit'</code>.</p>
+<ul>
+<li>Attached via <code>props.on</code> on <strong>element</strong> VNodes.</li>
+<li>Managed by <code>addEventListeners</code>, <code>removeEventListeners</code> in <code>events.js</code>.</li>
+<li>Bound to the <strong>component</strong> as <code>this</code> if there is a <code>hostComponent</code>.</li>
+<li>Triggered only by user interaction or DOM APIs.</li>
+</ul>
+<p>Example (from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>):</p>
+<pre><code class="language-js">h('button', {
+  on: {
+    click: (event) =&gt; {
+      this.handleClick(event)
+    },
+  },
+}, ['Click me'])
+</code></pre>
+</li>
+<li>
+<p><strong>Component events</strong> – semantic messages between components like <code>'toggle'</code>, <code>'save'</code>, <code>'close'</code>.</p>
+<ul>
+<li>Emitted with <code>this.emit('eventName', payload)</code> from inside a component.</li>
+<li>Delivered via the component’s <code>Dispatcher</code>.</li>
+<li>Subscribed by parents through props interpreted by <code>extractPropsAndEvents</code> and <code>defineComponent</code>.</li>
+<li>Triggered by your own code, usually in response to DOM events or state changes.</li>
+</ul>
+<p>Example:</p>
+<pre><code class="language-js">// Child
+this.emit('confirm', { choice: 'yes' })
+
+// Parent (when creating child)
+h(Modal, {
+  onConfirm: (payload) =&gt; this.handleConfirm(payload),
+})
+</code></pre>
+</li>
+</ol>
+<p>Analogy:</p>
+<ul>
+<li>DOM events are like hardware switches in your house – triggered by physical interaction.</li>
+<li>Component events are like text messages between family members – triggered by your own logic and intentions.</li>
+</ul>
+<p>They complement each other:</p>
+<ul>
+<li>DOM events start at the edge: “a click happened”.</li>
+<li>Component events bubble logical information upward: “the user confirmed this modal.”</li>
+</ul>
+<hr />
+<h2>8. Cleaning up: unmount and subscriptions</h2>
+<p>When a component goes away (because its parent stopped rendering it), <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a> calls:</p>
+<pre><code class="language-js">destroyDOM(vdom) // component case
+</code></pre>
+<p>Which, for components, does:</p>
+<pre><code class="language-js">case DOM_TYPES.COMPONENT: {
+  vdom.component.unmount()
+  enqueueJob(() =&gt; vdom.component.onUnmounted())
+  break
+}
+</code></pre>
+<p>The component’s <code>unmount</code> method:</p>
+<pre><code class="language-js">unmount() {
+  if (!this.#isMounted) {
+    throw new Error('Component is not mounted')
+  }
+
+  destroyDOM(this.#vdom)
+  this.#subscriptions.forEach((unsubscribe) =&gt; unsubscribe())
+
+  this.#vdom = null
+  this.#isMounted = false
+  this.#hostEl = null
+  this.#subscriptions = []
+}
+</code></pre>
+<p>So:</p>
+<ul>
+<li>The component’s subtree is destroyed.</li>
+<li>DOM event listeners are removed.</li>
+<li><strong>Dispatcher subscriptions are unsubscribed</strong> via <code>this.#subscriptions</code>.</li>
+</ul>
+<p>No parent handlers will run after a child disappeared; no memory is leaked through dangling dispatcher references.</p>
+<p>The same pattern appears in the router:</p>
+<ul>
+<li><code>HashRouter</code> has its own <code>Dispatcher</code>, mapping <code>'router-event'</code> to subscribers.</li>
+<li><code>RouterOutlet</code> subscribes in its <code>onMounted</code> and unsubscribes in <code>onUnmounted</code> (see <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>).</li>
+</ul>
+<hr />
+<h2>9. Recap</h2>
+<p>You now have a clear picture of how <strong>component events</strong> work in this framework:</p>
+<ul>
+<li>
+<p>A <strong>Dispatcher</strong> is a tiny pub/sub switchboard:</p>
+<ul>
+<li><code>subscribe(name, handler)</code> → returns <code>unsubscribe</code>.</li>
+<li><code>dispatch(name, payload)</code> → calls all subscribers for that name.</li>
+</ul>
+</li>
+<li>
+<p>Each <strong>component instance</strong> owns its own Dispatcher:</p>
+<ul>
+<li>Parents pass event handlers when they create children with <code>h</code>.</li>
+<li>The component wires those handlers to its Dispatcher on <code>mount</code>.</li>
+<li>The component cleans them up on <code>unmount</code>.</li>
+</ul>
+</li>
+<li>
+<p>Children <strong>emit</strong> events with <code>this.emit('eventName', payload)</code>:</p>
+<ul>
+<li>They never reach into parents directly.</li>
+<li>Parents receive semantic messages in their own methods, with <code>this</code> correctly bound.</li>
+</ul>
+</li>
+</ul>
+<p>This decouples components much like a phone switchboard decouples callers and receivers: everyone just dials a name, and the system connects them.</p>
+<hr />
+<p>Now that you know how components send messages upward, you might wonder about the opposite direction: how components accept <em>external content</em> and compose each other. That involves <strong>slots</strong>, where parents provide chunks of VNode trees that children insert into predefined holes. In the next chapter, <a href="06_slots_and_fillslots.html">Slots and fillSlots</a>, you’ll see how slots are declared with <code>hSlot</code>, how <code>fillSlots</code> rewrites VNode trees, and how that enables flexible component composition without extra wrappers.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="04_mountdom_destroydom_patchdom.html">&larr; mountDOM / destroyDOM / patchDOM</a></span>
+    <span><a href="06_slots_and_fillslots.html">Slots and fillSlots &rarr;</a></span>
+  </nav>
+</body>
+</html>

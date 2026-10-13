@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HashRouter / RouterLink / RouterOutlet — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 7: HashRouter / RouterLink / RouterOutlet</h1>
+<p>You click a link in a single‑page app.</p>
+<p>The address bar changes from <code>#/home</code> to <code>#/about</code>, but:</p>
+<ul>
+<li>The browser doesn’t reload the page</li>
+<li>Your JavaScript state stays alive</li>
+<li>A different component appears on screen</li>
+</ul>
+<p>Who decided which component to show? How did it notice the URL change? And how did that blue “link” know not to trigger a full page load?</p>
+<p>In this chapter you’ll meet the trio that makes this work in this framework:</p>
+<ul>
+<li><code>HashRouter</code> – watches the URL hash and decides which route is active</li>
+<li><code>RouterLink</code> – link component that tells the router to navigate instead of reloading the page</li>
+<li><code>RouterOutlet</code> – a “reception desk” component that renders the component for the current route</li>
+</ul>
+<p>They sit on top of everything you’ve seen so far:</p>
+<ul>
+<li>VNodes and node types from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a></li>
+<li>The <code>h</code> helper and slots from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a></li>
+<li>Components from <a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+<li>The DOM engine from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a></li>
+<li>The Dispatcher from <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a></li>
+<li>Slots again in <a href="06_slots_and_fillslots.html">Slots and fillSlots</a></li>
+</ul>
+<p>By the end you’ll be able to wire a tiny router into your app and understand how the URL, router, and components stay in sync.</p>
+<hr />
+<h2>1. Why a router at all?</h2>
+<p>Without a router, you can still build components and show or hide views based on state:</p>
+<pre><code class="language-js">if (this.state.page === 'home') {
+  return h(HomePage)
+} else if (this.state.page === 'about') {
+  return h(AboutPage)
+}
+</code></pre>
+<p>But then you must also:</p>
+<ul>
+<li>Change <code>page</code> when a link is clicked</li>
+<li>Sync that with <code>window.location</code> so the URL is meaningful</li>
+<li>Handle back / forward buttons</li>
+<li>Parse URL params like <code>/users/42</code></li>
+<li>Handle query strings like <code>?search=abc</code></li>
+</ul>
+<p>Doing that by hand quickly turns into a mess of <code>window.location.hash</code>, <code>addEventListener('popstate', ...)</code>, <code>history.pushState</code>, and your own parsing logic.</p>
+<p><code>HashRouter</code> takes all of that and turns it into something simple:</p>
+<ul>
+<li>You tell it what routes exist</li>
+<li>It figures out which route matches the current hash</li>
+<li>It exposes <code>matchedRoute</code>, <code>params</code>, and <code>query</code></li>
+<li>It broadcasts route changes to whoever cares</li>
+</ul>
+<p><code>RouterLink</code> and <code>RouterOutlet</code> are just components that talk to this router.</p>
+<hr />
+<h2>2. Big picture: how navigation flows</h2>
+<p>Let’s first see the “script” for a navigation:</p>
+<ol>
+<li>User clicks a <code>RouterLink</code></li>
+<li><code>RouterLink</code> stops the browser from doing a full navigation</li>
+<li><code>RouterLink</code> asks the router: “navigate to this path”</li>
+<li><code>HashRouter</code>:
+<ul>
+<li>Finds which route matches</li>
+<li>Updates <code>matchedRoute</code>, <code>params</code>, and <code>query</code></li>
+<li>Updates the URL hash with <code>pushState</code></li>
+<li>Notifies all subscribers that the route changed</li>
+</ul>
+</li>
+<li><code>RouterOutlet</code> is one of those subscribers</li>
+<li><code>RouterOutlet</code> updates its state so its <code>render()</code> returns a different component</li>
+<li>The component system uses <code>patchDOM</code> to update the UI in place</li>
+</ol>
+<p>Here’s that as a sequence diagram:</p>
+<pre class="mermaid">sequenceDiagram
+  participant User as User
+  participant Link as RouterLink
+  participant Router as HashRouter
+  participant Outlet as RouterOutlet
+  participant DOM as DomEngine
+
+  User->>Link: Clicks on navigation link
+  Link->>Router: Request navigation to path
+  Router->>Router: Match route and update state
+  Router->>Outlet: Notify about route change
+  Outlet->>DOM: Re render with new route component
+</pre>
+<ul>
+<li><code>DomEngine</code> is the combination of <code>mountDOM</code> and <code>patchDOM</code> from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</li>
+<li><code>Router</code> uses the <code>Dispatcher</code> from <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>.</li>
+<li><code>Link</code> and <code>Outlet</code> are normal components from <a href="03_definecomponent_component.html">defineComponent / Component</a>.</li>
+</ul>
+<p>Now let’s zoom into each piece.</p>
+<hr />
+<h2>3. <code>HashRouter</code>: watching the hash and choosing the route</h2>
+<p>Think of <code>HashRouter</code> as a traffic control tower:</p>
+<ul>
+<li>It watches the “waypoints” (routes) you declare</li>
+<li>It tracks the current “plane” (URL hash)</li>
+<li>It tells listeners whenever the route changes</li>
+</ul>
+<p>The “hash router” idea: only the part after <code>#</code> matters to the router:</p>
+<pre><code class="language-text">https://example.com/#/users/42?tab=posts
+                      ^^^^^^^^^^^^^^^^^
+                            hash
+</code></pre>
+<p>Everything before <code>#</code> is ignored; the server never sees route changes.</p>
+<h3>3.1 Defining routes</h3>
+<p>Routes describe which component to show for which path:</p>
+<pre><code class="language-js">import { HashRouter } from './router'
+import { Home } from './Home'
+import { User } from './User'
+import { NotFound } from './NotFound'
+
+const routes = [
+  { path: '/', component: Home },
+  { path: '/users/:userId', component: User },
+  { path: '*', component: NotFound },
+]
+
+const router = new HashRouter(routes)
+</code></pre>
+<p>A route object (from <code>route-matchers.js</code>) has:</p>
+<ul>
+<li><code>path</code> – string like <code>/users/:userId</code> or <code>*</code></li>
+<li><code>component</code> – the component to render</li>
+<li><code>redirect?</code> – optional path to redirect to</li>
+<li><code>beforeEnter?</code> – optional async guard to allow / block / redirect (more on this in <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a>)</li>
+</ul>
+<p><code>HashRouter</code> turns this array into an internal list of matchers using <code>makeRouteMatcher</code> (see <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a> for details).</p>
+<h3>3.2 The router’s public face</h3>
+<p>From the <code>HashRouter</code> JSDoc:</p>
+<pre><code class="language-js">/**
+ * @typedef {Object} Router
+ *
+ * @property {Route|null} matchedRoute
+ * @property {Object&lt;string, string&gt;} params
+ * @property {Object&lt;string, string&gt;} query
+ *
+ * @property {()=&gt; Promise&lt;void&gt;} init
+ * @property {() =&gt; void} destroy
+ *
+ * @property {(path: string) =&gt; Promise&lt;void&gt;} navigateTo
+ * @property {() =&gt; void} back
+ * @property {() =&gt; void} forward
+ *
+ * @property {(handler: RouteChangeHandler) =&gt; void} subscribe
+ * @property {(handler: RouteChangeHandler) =&gt; void} unsubscribe
+ */
+</code></pre>
+<p>You’ll mostly care about:</p>
+<ul>
+<li><code>matchedRoute</code> – the current route object, or <code>null</code></li>
+<li><code>params</code> – path parameters like <code>{ userId: '42' }</code></li>
+<li><code>query</code> – query params like <code>{ search: 'abc' }</code></li>
+<li><code>navigateTo(path)</code> – programmatic navigation</li>
+<li><code>subscribe(handler)</code> / <code>unsubscribe(handler)</code> – listen for route changes</li>
+</ul>
+<h3>3.3 Initialization and hash listening</h3>
+<p>To start the router:</p>
+<pre><code class="language-js">await router.init()
+</code></pre>
+<p>Inside <code>init</code>:</p>
+<pre><code class="language-js">async init() {
+  if (this.#isInitialized) {
+    return
+  }
+
+  if (document.location.hash === '') {
+    window.history.replaceState({}, '', '#/')
+  }
+
+  window.addEventListener('popstate', this.#onPopState)
+  await this.#matchCurrentRoute()
+
+  this.#isInitialized = true
+}
+</code></pre>
+<p>Pieces:</p>
+<ul>
+<li>If there’s no <code>#</code> in the URL, it forces <code>#/</code></li>
+<li>Adds a <code>popstate</code> listener
+<ul>
+<li><code>popstate</code> fires when the user uses back/forward or <code>history.back()</code>/<code>forward()</code></li>
+</ul>
+</li>
+<li>Immediately matches the current route (<code>#/something</code>)</li>
+</ul>
+<p>When you unmount the app (see <a href="10_createapp_application_context.html">createApp / Application context</a>), <code>router.destroy()</code> removes the listener and unsubscribes subscribers.</p>
+<h3>3.4 Navigating to a path</h3>
+<p>Programmatic navigation happens through <code>navigateTo</code>:</p>
+<pre><code class="language-js">async navigateTo(path) {
+  const matcher = this.#matchers.find((matcher) =&gt;
+    matcher.checkMatch(path)
+  )
+
+  if (matcher == null) {
+    console.warn(`[Router] No route matches path &quot;${path}&quot;`)
+
+    this.#matchedRoute = null
+    this.#params = {}
+    this.#query = {}
+
+    return
+  }
+
+  if (matcher.isRedirect) {
+    return this.navigateTo(matcher.route.redirect)
+  }
+
+  const from = this.#matchedRoute
+  const to = matcher.route
+  const { shouldNavigate, shouldRedirect, redirectPath } =
+    await this.#canChangeRoute(from, to)
+
+  if (shouldRedirect) {
+    return this.navigateTo(redirectPath)
+  }
+
+  if (shouldNavigate) {
+    this.#matchedRoute = matcher.route
+    this.#params = matcher.extractParams(path)
+    this.#query = matcher.extractQuery(path)
+    this.#pushState(path)
+
+    this.#dispatcher.dispatch(ROUTER_EVENT, { from, to, router: this })
+  }
+}
+</code></pre>
+<p>Think of this as: “decide where to go, update internal state, update the URL, then tell everyone.”</p>
+<p>Step by step:</p>
+<ol>
+<li>
+<p><strong>Find a matching route</strong></p>
+<pre><code class="language-js">const matcher = this.#matchers.find((matcher) =&gt;
+  matcher.checkMatch(path)
+)
+</code></pre>
+<ul>
+<li>Each matcher knows how to test a path and extract params/query.</li>
+<li>If none matches:
+<ul>
+<li>Log a warning</li>
+<li>Clear <code>matchedRoute</code>, <code>params</code>, <code>query</code></li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p><strong>Handle redirects</strong></p>
+<pre><code class="language-js">if (matcher.isRedirect) {
+  return this.navigateTo(matcher.route.redirect)
+}
+</code></pre>
+<ul>
+<li>A route can specify <code>redirect: '/new-path'</code></li>
+<li>In that case, the router just re‑calls <code>navigateTo</code> with the new path.</li>
+</ul>
+</li>
+<li>
+<p><strong>Check guards</strong></p>
+<pre><code class="language-js">const from = this.#matchedRoute
+const to = matcher.route
+const { shouldNavigate, shouldRedirect, redirectPath } =
+  await this.#canChangeRoute(from, to)
+</code></pre>
+<ul>
+<li><code>#canChangeRoute</code> runs a <code>beforeEnter</code> guard if present</li>
+<li>It may block navigation or redirect (see <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a> for the exact semantics).</li>
+</ul>
+</li>
+<li>
+<p><strong>Apply navigation if allowed</strong></p>
+<pre><code class="language-js">if (shouldNavigate) {
+  this.#matchedRoute = matcher.route
+  this.#params = matcher.extractParams(path)
+  this.#query = matcher.extractQuery(path)
+  this.#pushState(path)
+
+  this.#dispatcher.dispatch(ROUTER_EVENT, { from, to, router: this })
+}
+</code></pre>
+<ul>
+<li>Save the new route, params, and query</li>
+<li>Push a new history entry with <code>#path</code></li>
+<li>Use the internal <code>Dispatcher</code> to inform subscribers</li>
+</ul>
+</li>
+</ol>
+<p>The key line for UI updates is:</p>
+<pre><code class="language-js">this.#dispatcher.dispatch(ROUTER_EVENT, { from, to, router: this })
+</code></pre>
+<p>Anything that called <code>router.subscribe(handler)</code> will now get this object.</p>
+<p>Routes triggered by the browser’s back/forward (<code>popstate</code>) go through the same <code>navigateTo</code> flow via <code>#matchCurrentRoute</code>.</p>
+<h3>3.5 Subscribing to route changes</h3>
+<p>At the heart of <code>subscribe</code> is the same <code>Dispatcher</code> pattern you saw in <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>:</p>
+<pre><code class="language-js">const ROUTER_EVENT = 'router-event'
+
+#dispatcher = new Dispatcher()
+#subscriptions = new WeakMap()
+#subscriberFns = new Set()
+
+subscribe(handler) {
+  const unsubscribe = this.#dispatcher.subscribe(ROUTER_EVENT, handler)
+  this.#subscriptions.set(handler, unsubscribe)
+  this.#subscriberFns.add(handler)
+}
+
+unsubscribe(handler) {
+  const unsubscribe = this.#subscriptions.get(handler)
+  if (unsubscribe) {
+    unsubscribe()
+    this.#subscriptions.delete(handler)
+    this.#subscriberFns.delete(handler)
+  }
+}
+</code></pre>
+<ul>
+<li><code>subscribe(handler)</code>:
+<ul>
+<li>Registers <code>handler</code> for <code>'router-event'</code> on the dispatcher</li>
+<li>Stores the returned <code>unsubscribe</code> function in a <code>WeakMap</code> keyed by <code>handler</code></li>
+</ul>
+</li>
+<li><code>unsubscribe(handler)</code>:
+<ul>
+<li>Looks up and runs that <code>unsubscribe</code> and cleans up references</li>
+</ul>
+</li>
+</ul>
+<p>When <code>destroy()</code> runs, the router loops over all handlers to unsubscribe them:</p>
+<pre><code class="language-js">destroy() {
+  if (!this.#isInitialized) {
+    return
+  }
+
+  window.removeEventListener('popstate', this.#onPopState)
+  Array.from(this.#subscriberFns).forEach(this.unsubscribe, this)
+  this.#isInitialized = false
+}
+</code></pre>
+<p>This is exactly the “bulletin board” analogy from <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>:</p>
+<ul>
+<li><code>HashRouter</code> is a bulletin board for <code>'router-event'</code></li>
+<li><code>subscribe</code> pins your handler on that board</li>
+<li><code>dispatch</code> calls everyone who’s pinned there</li>
+</ul>
+<p><code>RouterOutlet</code> is one of these subscribers.</p>
+<hr />
+<h2>4. <code>RouterOutlet</code>: the receptionist component</h2>
+<p><code>RouterOutlet</code> is the “front desk” of your app:</p>
+<ul>
+<li>It listens to the router</li>
+<li>When the route changes, it swaps which component it renders</li>
+</ul>
+<p>It’s defined in <code>router-components.js</code> using <code>defineComponent</code> from <a href="03_definecomponent_component.html">defineComponent / Component</a>:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+
+export const RouterOutlet = defineComponent({
+  state() {
+    return {
+      matchedRoute: null,
+      subscription: null,
+    }
+  },
+
+  onMounted() {
+    const subscription = this.appContext.router.subscribe(({ to }) =&gt; {
+      this.handleRouteChange(to)
+    })
+
+    this.updateState({ subscription })
+  },
+
+  onUnmounted() {
+    const { subscription } = this.state
+    this.appContext.router.unsubscribe(subscription)
+  },
+
+  handleRouteChange(matchedRoute) {
+    this.updateState({ matchedRoute })
+  },
+
+  render() {
+    const { matchedRoute } = this.state
+
+    return h('div', { id: 'router-outlet' }, [
+      matchedRoute ? h(matchedRoute.component) : null,
+    ])
+  },
+})
+</code></pre>
+<p>Let’s break this into bite‑sized pieces.</p>
+<h3>4.1 State: tracking the current route</h3>
+<pre><code class="language-js">state() {
+  return {
+    matchedRoute: null,
+    subscription: null,
+  }
+}
+</code></pre>
+<ul>
+<li><code>matchedRoute</code> – the current <code>Route</code> object from the router (or <code>null</code>)</li>
+<li><code>subscription</code> – intended to track subscription info to unsubscribe later</li>
+</ul>
+<p>We’ll see why the unsubscribe line is slightly off in a moment.</p>
+<h3>4.2 Subscribing to the router in <code>onMounted</code></h3>
+<pre><code class="language-js">onMounted() {
+  const subscription = this.appContext.router.subscribe(({ to }) =&gt; {
+    this.handleRouteChange(to)
+  })
+
+  this.updateState({ subscription })
+},
+</code></pre>
+<p>Important ideas:</p>
+<ul>
+<li>
+<p>Components get <code>appContext</code> from the app (see <a href="10_createapp_application_context.html">createApp / Application context</a>):</p>
+<pre><code class="language-js">const context = {
+  router: options.router || new NoopRouter(),
+}
+
+mountDOM(vdom, parentEl, null, { appContext: context })
+</code></pre>
+<p>Every component instance’s <code>this.appContext</code> points to that shared object.</p>
+</li>
+<li>
+<p>In <code>RouterOutlet.onMounted</code>, we use that context to subscribe:</p>
+<pre><code class="language-js">this.appContext.router.subscribe(({ to }) =&gt; {
+  this.handleRouteChange(to)
+})
+</code></pre>
+<p>The handler receives the payload from <code>HashRouter</code>:</p>
+<pre><code class="language-js">{ from, to, router }
+</code></pre>
+<p>We ignore everything except <code>to</code> (the new route object) and forward it to a component method.</p>
+</li>
+<li>
+<p>The code stores whatever <code>router.subscribe</code> returns in <code>state.subscription</code>.<br />
+In this implementation <code>subscribe</code> does not return anything, so <code>subscription</code> ends up <code>undefined</code>. A more robust version would store the handler itself and call <code>router.unsubscribe(handler)</code> in <code>onUnmounted</code>.</p>
+</li>
+</ul>
+<p>The concept, though, is: “when I mount, I subscribe to route changes.”</p>
+<h3>4.3 Updating on route change</h3>
+<pre><code class="language-js">handleRouteChange(matchedRoute) {
+  this.updateState({ matchedRoute })
+}
+</code></pre>
+<ul>
+<li><code>updateState</code> is from <a href="03_definecomponent_component.html">defineComponent / Component</a>: it merges the new state and calls <code>patchDOM</code> with the new render result.</li>
+<li>Changing <code>matchedRoute</code> means the next <code>render()</code> will show a different component.</li>
+</ul>
+<h3>4.4 Cleaning up in <code>onUnmounted</code></h3>
+<pre><code class="language-js">onUnmounted() {
+  const { subscription } = this.state
+  this.appContext.router.unsubscribe(subscription)
+},
+</code></pre>
+<ul>
+<li>The intention is to unsubscribe from the router when <code>RouterOutlet</code> itself is unmounted.</li>
+<li>In this specific code, <code>subscription</code> is <code>undefined</code>, so <code>unsubscribe</code> is a no‑op; but the router also unsubscribes everyone in <code>destroy()</code>, so app teardown is safe.</li>
+</ul>
+<p>The main takeaway: <code>RouterOutlet</code> is polite and <em>tries</em> to clean up its listener, just like components unsubscribe from their own <code>Dispatcher</code> subscriptions (see <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>).</p>
+<h3>4.5 Rendering the active route’s component</h3>
+<pre><code class="language-js">render() {
+  const { matchedRoute } = this.state
+
+  return h('div', { id: 'router-outlet' }, [
+    matchedRoute ? h(matchedRoute.component) : null,
+  ])
+},
+</code></pre>
+<p>This uses everything you know from earlier chapters:</p>
+<ul>
+<li>
+<p><code>h</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a> to create VNodes</p>
+</li>
+<li>
+<p>Conditional child <code>matchedRoute ? ... : null</code> – <code>null</code> is filtered out by <code>withoutNulls</code> in <code>h.js</code></p>
+</li>
+<li>
+<p>If a <code>matchedRoute</code> exists, it renders that route’s component:</p>
+<pre><code class="language-js">h(matchedRoute.component)
+</code></pre>
+<p>Since <code>tag</code> is a component constructor, <code>h</code> creates a <code>COMPONENT</code> VNode. Then <code>mountDOM</code> / <code>patchDOM</code> from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a> will mount or patch that component and its subtree.</p>
+</li>
+</ul>
+<p>So <code>RouterOutlet</code> is literally just:</p>
+<blockquote>
+<p>“Wrap a <code>div</code> around whichever page component the router says is active.”</p>
+</blockquote>
+<p>You typically use it inside your app’s root component:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+import { RouterOutlet } from './router-components'
+
+export const App = defineComponent({
+  render() {
+    return h('div', null, [
+      h('h1', null, ['My App']),
+      h(RouterOutlet),
+    ])
+  },
+})
+</code></pre>
+<hr />
+<h2>5. <code>RouterLink</code>: a link that talks to the router</h2>
+<p>Imagine you’ve wired your <code>HashRouter</code> and <code>RouterOutlet</code>. Now you need navigation links that:</p>
+<ul>
+<li>Look like normal links (<code>&lt;a href=&quot;/users&quot;&gt;Users&lt;/a&gt;</code>)</li>
+<li>But don’t reload the page</li>
+<li>And instead ask the router to navigate</li>
+</ul>
+<p>That’s what <code>RouterLink</code> does.</p>
+<p>Here’s the definition from <code>router-components.js</code>:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h, hSlot } from './h'
+
+export const RouterLink = defineComponent({
+  render() {
+    const { to } = this.props
+
+    return h(
+      'a',
+      {
+        href: to,
+        on: {
+          click: (e) =&gt; {
+            e.preventDefault()
+            this.appContext.router.navigateTo(to)
+          },
+        },
+      },
+      [hSlot()]
+    )
+  },
+})
+</code></pre>
+<p>Breakdown:</p>
+<h3>5.1 Props and the <code>to</code> path</h3>
+<pre><code class="language-js">const { to } = this.props
+</code></pre>
+<ul>
+<li>Consumers write something like <code>h(RouterLink, { to: '/users' }, ['Users'])</code>.</li>
+<li><code>to</code> is the path to navigate to (like <code>/users/42?tab=posts</code>).</li>
+</ul>
+<h3>5.2 Rendering as a regular anchor element</h3>
+<pre><code class="language-js">h(
+  'a',
+  {
+    href: to,
+    on: { /* events */ },
+  },
+  [hSlot()]
+)
+</code></pre>
+<ul>
+<li><code>tag: 'a'</code> makes an <code>ELEMENT</code> VNode.</li>
+<li>The <code>href: to</code> attribute is set so:
+<ul>
+<li>Right‑click “Open in new tab” still works</li>
+<li>Long‑press on mobile shows the expected URL</li>
+<li>Copy link address works</li>
+</ul>
+</li>
+</ul>
+<p>This is a graceful fallback: if JS is disabled, clicking the link will still try to navigate the browser to <code>#/path</code>, which at least shows the URL.</p>
+<h3>5.3 Intercepting clicks and using the router</h3>
+<pre><code class="language-js">on: {
+  click: (e) =&gt; {
+    e.preventDefault()
+    this.appContext.router.navigateTo(to)
+  },
+},
+</code></pre>
+<p>When the user clicks:</p>
+<ol>
+<li><code>e.preventDefault()</code> stops the browser’s default full‑page navigation.</li>
+<li><code>this.appContext.router.navigateTo(to)</code> hands control to <code>HashRouter</code>:
+<ul>
+<li>Finds the matching route</li>
+<li>Updates state and URL</li>
+<li>Dispatches the router event</li>
+</ul>
+</li>
+</ol>
+<p>The click handler is a DOM event handler described in <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a> and <code>events.js</code>:</p>
+<ul>
+<li>The <code>on</code> prop is extracted by <code>extractPropsAndEvents</code></li>
+<li><code>mountDOM</code> uses <code>addEventListeners</code> to attach the handler to the <code>&lt;a&gt;</code> element</li>
+<li>If <code>RouterLink</code> is inside another component, the handler’s <code>this</code> is bound to that component instance</li>
+</ul>
+<h3>5.4 Using a slot for the link label</h3>
+<pre><code class="language-js">[hSlot()]
+</code></pre>
+<p><code>RouterLink</code> uses a slot to accept any child content inside the <code>&lt;a&gt;</code>:</p>
+<ul>
+<li>If you use <code>h(RouterLink, { to: '/home' }, ['Home'])</code>, the <code>'Home'</code> text becomes the slot content.</li>
+<li><code>hSlot()</code> creates a slot VNode (see <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>).</li>
+<li>When <code>RouterLink.render()</code> returns, the internal component wrapper calls <code>fillSlots</code> from <a href="06_slots_and_fillslots.html">Slots and fillSlots</a>, replacing the slot with the external content.</li>
+</ul>
+<p>So you can have:</p>
+<pre><code class="language-js">h(RouterLink, { to: '/home' }, ['Home'])
+
+h(RouterLink, { to: '/settings' }, [
+  h('span', { class: 'icon-settings' }),
+  h('span', null, ['Settings']),
+])
+</code></pre>
+<p>In both cases, <code>RouterLink</code> only controls:</p>
+<ul>
+<li>The tag (<code>a</code>)</li>
+<li>The <code>href</code> and click behavior</li>
+</ul>
+<p>The caller controls the inner content.</p>
+<hr />
+<h2>6. Plugging the router into the app</h2>
+<p>The final piece is how you create and wire a router when you create the app. That happens in <code>createApp</code> (see <a href="10_createapp_application_context.html">createApp / Application context</a>).</p>
+<p>A typical bootstrapping might look like this:</p>
+<pre><code class="language-js">import { createApp, HashRouter } from './index'
+import { App } from './App'
+
+const routes = [
+  { path: '/', component: Home },
+  { path: '/users/:userId', component: User },
+  { path: '*', component: NotFound },
+]
+
+const router = new HashRouter(routes)
+
+const app = createApp(App, {}, { router })
+app.mount(document.getElementById('app'))
+</code></pre>
+<p>Under the hood, <code>createApp</code> does:</p>
+<pre><code class="language-js">export function createApp(RootComponent, props = {}, options = {}) {
+  // ...
+
+  const context = {
+    router: options.router || new NoopRouter(),
+  }
+
+  return {
+    mount(_parentEl) {
+      // ...
+      vdom = h(RootComponent, props)
+      mountDOM(vdom, parentEl, null, { appContext: context })
+
+      context.router.init()
+      // ...
+    },
+
+    unmount() {
+      destroyDOM(vdom)
+      context.router.destroy()
+      // ...
+    },
+  }
+}
+</code></pre>
+<p>Key points:</p>
+<ul>
+<li>The router you pass in becomes <code>context.router</code>.</li>
+<li><code>mountDOM</code> passes <code>{ appContext: context }</code> to the root so that every component can access <code>this.appContext.router</code>.</li>
+<li>After mounting the root VNode, the app calls <code>router.init()</code> to:
+<ul>
+<li>Ensure a hash exists</li>
+<li>Start listening to <code>popstate</code></li>
+<li>Match the initial route</li>
+</ul>
+</li>
+</ul>
+<p>When you <code>unmount()</code> the app, <code>destroyDOM</code> tears down the component tree, and <code>router.destroy()</code> removes event listeners and subscribers.</p>
+<p>So your entire navigation infrastructure is just another object hanging off the app context, much like global services in other frameworks.</p>
+<hr />
+<h2>7. Reading params and query inside route components</h2>
+<p><code>RouterOutlet</code> passes only the <code>component</code> from <code>matchedRoute</code> into the view:</p>
+<pre><code class="language-js">matchedRoute ? h(matchedRoute.component) : null
+</code></pre>
+<p>So how does a page like <code>User</code> know which user to show?</p>
+<p>It uses <code>this.appContext.router.params</code> and <code>this.appContext.router.query</code>.</p>
+<p>Example:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+
+export const User = defineComponent({
+  state() {
+    return { userId: null }
+  },
+
+  onMounted() {
+    const { router } = this.appContext
+    const { userId } = router.params
+    this.updateState({ userId })
+  },
+
+  render() {
+    const { userId } = this.state
+
+    return h('div', null, [
+      h('h2', null, [`User ${userId}`]),
+    ])
+  },
+})
+</code></pre>
+<p>Routing aspects:</p>
+<ul>
+<li>
+<p>In <code>routes</code> you might have <code>{ path: '/users/:userId', component: User }</code>.</p>
+</li>
+<li>
+<p>When the router matches <code>/users/42</code>, it uses the <code>RouteMatcher</code> from <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a> to set:</p>
+<pre><code class="language-js">router.params = { userId: '42' }
+</code></pre>
+</li>
+<li>
+<p><code>router.query</code> works similarly for <code>?foo=bar</code> via <code>URLSearchParams</code>.</p>
+</li>
+</ul>
+<p>Because the router instance is part of <code>appContext</code>, <strong>any</strong> component can read the current route, not just the one inside <code>RouterOutlet</code>.</p>
+<hr />
+<h2>8. Putting it all together: a tiny routed app</h2>
+<p>Let’s wire all three pieces quickly:</p>
+<pre><code class="language-js">// routes.js
+import { Home } from './Home'
+import { User } from './User'
+import { NotFound } from './NotFound'
+
+export const routes = [
+  { path: '/', component: Home },
+  { path: '/users/:userId', component: User },
+  { path: '*', component: NotFound },
+]
+</code></pre>
+<pre><code class="language-js">// App.js
+import { defineComponent } from './component'
+import { h } from './h'
+import { RouterLink, RouterOutlet } from './router-components'
+
+export const App = defineComponent({
+  render() {
+    return h('div', null, [
+      h('nav', null, [
+        h(RouterLink, { to: '/' }, ['Home']),
+        h(RouterLink, { to: '/users/42' }, ['User 42']),
+      ]),
+      h(RouterOutlet),
+    ])
+  },
+})
+</code></pre>
+<pre><code class="language-js">// main.js
+import { createApp, HashRouter } from './index'
+import { App } from './App'
+import { routes } from './routes'
+
+const router = new HashRouter(routes)
+const app = createApp(App, {}, { router })
+
+app.mount(document.getElementById('app'))
+</code></pre>
+<p>What you get:</p>
+<ul>
+<li>Clicking “Home” or “User 42” updates the hash (<code>#/</code> or <code>#/users/42</code>).</li>
+<li>The router matches the route and dispatches the route change.</li>
+<li><code>RouterOutlet</code> re‑renders with <code>Home</code> or <code>User</code>.</li>
+<li><code>User</code> reads <code>userId</code> from <code>this.appContext.router.params</code>.</li>
+</ul>
+<p>All using the same building blocks you’ve met so far: components, VNodes, the DOM engine, dispatchers, and slots.</p>
+<hr />
+<h2>9. Recap</h2>
+<p>You’ve now seen how this framework’s routing layer works like a small, self‑contained transport system:</p>
+<ul>
+<li>
+<p><strong><code>HashRouter</code></strong>:</p>
+<ul>
+<li>Watches <code>window.location.hash</code> and <code>popstate</code></li>
+<li>Uses route matchers from <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a> to pick a route</li>
+<li>Keeps <code>matchedRoute</code>, <code>params</code>, and <code>query</code> up to date</li>
+<li>Broadcasts route changes via a <code>Dispatcher</code></li>
+</ul>
+</li>
+<li>
+<p><strong><code>RouterOutlet</code></strong>:</p>
+<ul>
+<li>Is a component that subscribes to the router on mount</li>
+<li>Stores <code>matchedRoute</code> in its own state</li>
+<li>Renders <code>h(matchedRoute.component)</code> inside a <code>&lt;div id=&quot;router-outlet&quot;&gt;</code></li>
+</ul>
+</li>
+<li>
+<p><strong><code>RouterLink</code></strong>:</p>
+<ul>
+<li>Is a component that renders an <code>&lt;a&gt;</code> tag with <code>href=to</code></li>
+<li>Intercepts clicks with a DOM event and calls <code>router.navigateTo(to)</code></li>
+<li>Uses a slot so callers can control link content</li>
+</ul>
+</li>
+</ul>
+<p>All three are thin layers on top of:</p>
+<ul>
+<li>Components from <a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+<li>VNodes and <code>h</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a></li>
+<li>The DOM and diffing engine from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a></li>
+<li>The Dispatcher from <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a></li>
+<li>Slots from <a href="06_slots_and_fillslots.html">Slots and fillSlots</a></li>
+</ul>
+<p>Now that you’ve seen the router from the outside, the natural next question is: <strong>how exactly do those route matchers work</strong>?</p>
+<ul>
+<li>How does <code>/users/:id</code> turn into a regex?</li>
+<li>How are params and query extracted?</li>
+<li>How does the router ensure that routes are valid?</li>
+</ul>
+<p>That’s what you’ll explore next in <a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute</a>.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="06_slots_and_fillslots.html">&larr; Slots and fillSlots</a></span>
+    <span><a href="08_routematcher_validateroute.html">RouteMatcher / validateRoute &rarr;</a></span>
+  </nav>
+</body>
+</html>

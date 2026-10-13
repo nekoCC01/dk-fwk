@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RouteMatcher / validateRoute — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 8: RouteMatcher / validateRoute</h1>
+<p>You type <code>/users/42?tab=posts</code> into the address bar of your single‑page app, hit Enter, and:</p>
+<ul>
+<li>The URL changes</li>
+<li>A user profile screen appears</li>
+<li>The “Posts” tab is active</li>
+</ul>
+<p>No page reload. No full server round‑trip.</p>
+<p>Somehow, your router:</p>
+<ul>
+<li>Recognized that <code>/users/42</code> means “show the User page”</li>
+<li>Extracted <code>42</code> as a <code>userId</code></li>
+<li>Saw <code>?tab=posts</code> and turned it into <code>{ tab: 'posts' }</code></li>
+<li>Knew this route was valid and safe to use</li>
+</ul>
+<p>This chapter is about the small but crucial piece that does that pattern matching and validation: <strong>route matchers</strong> and <code>validateRoute</code>.</p>
+<p>Think of route matchers as <strong>stencils</strong> for URLs:</p>
+<ul>
+<li>The stencil says “I match <code>/users/:userId</code>”</li>
+<li>When you hold it over a URL like <code>/users/42?tab=posts</code>, it can say:
+<ul>
+<li>“Yes, that fits me”</li>
+<li>“Here is the <code>userId</code> I found: <code>42</code>”</li>
+<li>“Here is the query: <code>{ tab: 'posts' }</code>”</li>
+</ul>
+</li>
+</ul>
+<p>We’ll connect this to the <code>HashRouter</code> you saw in <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>, since that class uses these matchers all the time.</p>
+<hr />
+<h2>1. Why we need route matchers at all</h2>
+<p>Back in <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a> you saw that <code>HashRouter</code> is constructed with a list of routes:</p>
+<pre><code class="language-js">const routes = [
+  { path: '/', component: Home },
+  { path: '/users/:userId', component: User },
+  { path: '*', component: NotFound },
+]
+</code></pre>
+<p>Now imagine you are the router and someone calls:</p>
+<pre><code class="language-js">router.navigateTo('/users/42?tab=posts')
+</code></pre>
+<p>You must:</p>
+<ol>
+<li>Decide which route definition matches this string.</li>
+<li>Extract any <strong>path params</strong> (like <code>:userId</code>) from it.</li>
+<li>Extract any <strong>query params</strong> from the part after <code>?</code>.</li>
+<li>Handle special cases:
+<ul>
+<li>Catch‑all routes like <code>*</code></li>
+<li>Redirect routes like <code>{ path: '/old', redirect: '/new' }</code></li>
+</ul>
+</li>
+<li>Make sure route definitions themselves are <strong>valid</strong> and won’t blow up later.</li>
+</ol>
+<p>You could do this with ad‑hoc <code>if</code> checks and <code>split('/')</code> calls all over the router, but that quickly becomes brittle. Instead, this codebase uses <strong>RouteMatcher objects</strong>:</p>
+<ul>
+<li>Each route definition is turned into one RouteMatcher</li>
+<li>The matcher knows:
+<ul>
+<li>How to test a path</li>
+<li>How to pull out params</li>
+<li>How to pull out query</li>
+</ul>
+</li>
+</ul>
+<p>The router just loops over matchers and asks each:</p>
+<ul>
+<li>“Do you match this path?”</li>
+<li>“If so, please give me params and query.”</li>
+</ul>
+<p>Before any matcher is built, <code>validateRoute</code> checks the route definition to catch mistakes early—like a path that doesn’t start with <code>/</code> or a redirect that loops to itself.</p>
+<hr />
+<h2>2. Route and RouteMatcher: the shapes</h2>
+<p>All the routing‑specific logic lives in <code>route-matchers.js</code>. Let’s start by looking at the types described in the comments.</p>
+<p>A <strong>Route</strong> is what you write in your route table:</p>
+<pre><code class="language-js">/**
+ * @typedef Route
+ * @type {object}
+ * @property {string} path - The path of the route.
+ * @property {import('./component').Component} component - The component to render when the route is matched.
+ * @property {string} [redirect] - The path to redirect to when the route is matched.
+ * @property {(from: string, to: string) =&gt; Promise&lt;boolean|string&gt;} [beforeEnter] - Guard before navigation.
+ */
+</code></pre>
+<p>Fields:</p>
+<ul>
+<li><code>path</code> – pattern for the path piece of the URL hash:
+<ul>
+<li><code>/</code></li>
+<li><code>/users/:userId</code></li>
+<li><code>/users/:userId/posts/:postId</code></li>
+<li><code>*</code> (catch‑all)</li>
+</ul>
+</li>
+<li><code>component</code> – which component to render for this route.</li>
+<li><code>redirect</code> – optional; if present, this route is not rendered, it redirects.</li>
+<li><code>beforeEnter</code> – optional async guard the router calls to decide if navigation is allowed; you saw how the router uses this in <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>.</li>
+</ul>
+<p>A <strong>RouteMatcher</strong> wraps a Route with logic:</p>
+<pre><code class="language-js">/**
+ * @typedef RouteMatcher
+ * @type {object}
+ * @property {Route} route - The route that this matcher matches.
+ * @property {boolean} isRedirect - Whether the route is a redirect.
+ * @property {(path: string) =&gt; boolean} checkMatch - Check if this matcher matches a path.
+ * @property {(path: string) =&gt; Object&lt;string, string&gt;} extractParams - Extract path parameters.
+ * @property {(path: string) =&gt; Object&lt;string, string&gt;} extractQuery - Extract query parameters.
+ */
+</code></pre>
+<p>So a matcher works like this:</p>
+<ul>
+<li>You call <code>matcher.checkMatch('/users/42?tab=posts')</code> → <code>true</code> or <code>false</code>.</li>
+<li>If it’s <code>true</code>, you call:
+<ul>
+<li><code>matcher.extractParams('/users/42?tab=posts')</code> → <code>{ userId: '42' }</code></li>
+<li><code>matcher.extractQuery('/users/42?tab=posts')</code> → <code>{ tab: 'posts' }</code></li>
+</ul>
+</li>
+<li>The router uses <code>matcher.route</code> to know which <code>component</code>, <code>redirect</code>, and <code>beforeEnter</code> to use.</li>
+</ul>
+<p>Think of <code>Route</code> as “human‑friendly description of a route” and <code>RouteMatcher</code> as “machine‑ready helper for that route.”</p>
+<hr />
+<h2>3. <code>validateRoute</code>: catching bad routes early</h2>
+<p>Before any matcher gets created, each <code>Route</code> is run through <code>validateRoute</code>. This is like a <strong>lint check</strong> for route definitions.</p>
+<p>Here’s the function, kept short:</p>
+<pre><code class="language-js">const CATCH_ALL_ROUTE = '*'
+
+export function validateRoute(route) {
+  if (typeof route.path !== 'string') {
+    throw new Error('Route path must be a string')
+  }
+
+  if (isNotBlankOrEmptyString(route.path) === false) {
+    throw new Error('Route path must not be empty')
+  }
+
+  if (route.path[0] !== '/' &amp;&amp; route.path !== CATCH_ALL_ROUTE) {
+    throw new Error(
+      'Route path must start with a &quot;/&quot; or be the catch-all route &quot;*&quot;'
+    )
+  }
+
+  if (route.redirect &amp;&amp; route.path === route.redirect) {
+    throw new Error(&quot;A redirect route can't redirect to itself&quot;)
+  }
+}
+</code></pre>
+<p>Let’s go line by line.</p>
+<h3>3.1 Path must be a string</h3>
+<pre><code class="language-js">if (typeof route.path !== 'string') {
+  throw new Error('Route path must be a string')
+}
+</code></pre>
+<p>Guards against accidental <code>path: 123</code> or <code>path: null</code>.</p>
+<h3>3.2 Path must not be blank</h3>
+<pre><code class="language-js">if (isNotBlankOrEmptyString(route.path) === false) {
+  throw new Error('Route path must not be empty')
+}
+</code></pre>
+<p><code>isNotBlankOrEmptyString</code> comes from <code>utils/strings.js</code>:</p>
+<ul>
+<li>It ensures the path is not <code>''</code> or <code>'   '</code>.</li>
+</ul>
+<p>So <code>path: ''</code> is rejected.</p>
+<h3>3.3 Path must start with <code>/</code> or be <code>*</code></h3>
+<pre><code class="language-js">if (route.path[0] !== '/' &amp;&amp; route.path !== CATCH_ALL_ROUTE) {
+  throw new Error(
+    'Route path must start with a &quot;/&quot; or be the catch-all route &quot;*&quot;'
+  )
+}
+</code></pre>
+<p>Valid paths:</p>
+<ul>
+<li><code>/</code></li>
+<li><code>/users</code></li>
+<li><code>/users/:id</code></li>
+<li><code>*</code></li>
+</ul>
+<p>Invalid:</p>
+<ul>
+<li><code>'users'</code> (no leading slash)</li>
+<li><code>'/*/user'</code> (first char is not <code>/</code> or <code>*</code> literal)</li>
+</ul>
+<p>This constraint simplifies the regex logic and makes your routes visually consistent.</p>
+<h3>3.4 Redirect routes cannot redirect to themselves</h3>
+<pre><code class="language-js">if (route.redirect &amp;&amp; route.path === route.redirect) {
+  throw new Error(&quot;A redirect route can't redirect to itself&quot;)
+}
+</code></pre>
+<p>If you wrote:</p>
+<pre><code class="language-js">{ path: '/login', redirect: '/login' }
+</code></pre>
+<p>that would create an infinite redirect loop. <code>validateRoute</code> stops that before it ever hits runtime.</p>
+<h3>3.5 Where <code>validateRoute</code> is used</h3>
+<p>Every matcher is created with:</p>
+<pre><code class="language-js">export function makeRouteMatcher(route) {
+  validateRoute(route)
+
+  return routeHasParams(route)
+    ? makeMatcherWithParams(route)
+    : makeMatcherWithoutParams(route)
+}
+</code></pre>
+<p>So:</p>
+<ul>
+<li>Your routes are validated <strong>once</strong> at router creation time.</li>
+<li>If there’s a bad route definition, you get an immediate error when you construct the router, instead of subtle bugs later.</li>
+</ul>
+<p>Analogy: <code>validateRoute</code> is the bouncer at the club entrance—bad routes never get inside.</p>
+<hr />
+<h2>4. <code>makeRouteMatcher</code>: turning a route into a matcher</h2>
+<p><code>makeRouteMatcher</code> is the main factory:</p>
+<pre><code class="language-js">export function makeRouteMatcher(route) {
+  validateRoute(route)
+
+  return routeHasParams(route)
+    ? makeMatcherWithParams(route)
+    : makeMatcherWithoutParams(route)
+}
+
+function routeHasParams({ path }) {
+  return path.includes(':')
+}
+</code></pre>
+<p>It divides routes into two kinds:</p>
+<ol>
+<li><strong>With params</strong>, like <code>/users/:userId</code> or <code>/users/:userId/posts/:postId</code></li>
+<li><strong>Without params</strong>, like <code>/</code>, <code>/about</code>, and <code>*</code></li>
+</ol>
+<p>Why distinguish them?</p>
+<ul>
+<li>Param routes need a <strong>capturing regex</strong> to pull out <code>userId</code>, <code>postId</code>, etc.</li>
+<li>Param‑less routes can often be matched faster and have no <code>params</code>, so they can always just return <code>{}</code>.</li>
+</ul>
+<p>Let’s see both variants.</p>
+<hr />
+<h2>5. Matchers <strong>with</strong> params: <code>/users/:userId</code></h2>
+<p>Routes with <code>:</code> placeholders are turned into regexes with <strong>named capture groups</strong>.</p>
+<h3>5.1 Building the matcher</h3>
+<pre><code class="language-js">function makeMatcherWithParams(route) {
+  const regex = makeRouteWithParamsRegex(route)
+  const isRedirect = typeof route.redirect === 'string'
+
+  return {
+    route,
+    isRedirect,
+    checkMatch(path) {
+      return regex.test(path)
+    },
+    extractParams(path) {
+      const { groups } = regex.exec(path)
+      return groups
+    },
+    extractQuery,
+  }
+}
+</code></pre>
+<p>This object is your RouteMatcher:</p>
+<ul>
+<li><code>route</code> – the original <code>Route</code> object.</li>
+<li><code>isRedirect</code> – convenience flag, so the router can quickly see if it should call <code>navigateTo(route.redirect)</code> instead of rendering a component.</li>
+<li><code>checkMatch(path)</code> – test the regex against the incoming path string.</li>
+<li><code>extractParams(path)</code> – run the regex again, and read its <code>.groups</code>.</li>
+<li><code>extractQuery(path)</code> – shared helper function we’ll inspect in a bit.</li>
+</ul>
+<p>The interesting part is how <code>regex</code> is built.</p>
+<h3>5.2 Converting a param path into a regex</h3>
+<pre><code class="language-js">function makeRouteWithParamsRegex({ path }) {
+  const regex = path.replace(
+    /:([^/]+)/g,
+    (_, paramName) =&gt; `(?&lt;${paramName}&gt;[^/]+)`
+  )
+
+  return new RegExp(`^${regex}$`)
+}
+</code></pre>
+<p>This packs a lot into a few lines; let’s unpack:</p>
+<ol>
+<li>
+<p><code>/:([^/]+)/g</code> matches:</p>
+<ul>
+<li>A literal <code>:</code></li>
+<li>Followed by any run of characters that is not <code>/</code></li>
+<li>Captures that name into <code>paramName</code></li>
+</ul>
+<p>Examples:</p>
+<ul>
+<li><code>/users/:userId</code> → it finds <code>:userId</code> and captures <code>userId</code></li>
+<li><code>/users/:userId/posts/:postId</code> → it finds both <code>:userId</code> and <code>:postId</code></li>
+</ul>
+</li>
+<li>
+<p>The <code>replace</code> callback:</p>
+<pre><code class="language-js">(_, paramName) =&gt; `(?&lt;${paramName}&gt;[^/]+)`
+</code></pre>
+<ul>
+<li><code>_</code> is the whole match (<code>:userId</code>), which we ignore.</li>
+<li><code>paramName</code> is the captured name (<code>userId</code>).</li>
+<li>The replacement string <code>(?&lt;userId&gt;[^/]+)</code> is a <strong>named capture group</strong>:
+<ul>
+<li><code>(?&lt;userId&gt; ... )</code> means “capture this as <code>groups.userId</code>”</li>
+<li><code>[^/]+</code> means “one or more non‑slash characters”</li>
+</ul>
+</li>
+</ul>
+<p>So:</p>
+<ul>
+<li><code>'/users/:userId'</code> becomes <code>'/users/(?&lt;userId&gt;[^/]+)'</code></li>
+<li><code>'/users/:userId/posts/:postId'</code> becomes <code>'/users/(?&lt;userId&gt;[^/]+)/posts/(?&lt;postId&gt;[^/]+)'</code></li>
+</ul>
+</li>
+<li>
+<p>Finally, wrap the whole thing with <code>^</code> and <code>$</code>:</p>
+<pre><code class="language-js">new RegExp(`^${regex}$`)
+</code></pre>
+<p>This ensures:</p>
+<ul>
+<li><code>^</code> – beginning of string</li>
+<li><code>$</code> – end of string</li>
+</ul>
+<p>So the regex will match the entire path portion (it can still contain <code>?query</code> afterward; we’ll see that nuance when extracting params vs query).</p>
+</li>
+</ol>
+<h3>5.3 Using the regex</h3>
+<p>Once we have that <code>regex</code>, <code>checkMatch</code> and <code>extractParams</code> are straightforward:</p>
+<pre><code class="language-js">checkMatch(path) {
+  return regex.test(path)
+}
+</code></pre>
+<ul>
+<li><code>regex.test('/users/42')</code> → <code>true</code></li>
+<li><code>regex.test('/users')</code> → <code>false</code></li>
+<li><code>regex.test('/users/42?tab=posts')</code>:
+<ul>
+<li>The pattern <code>[^/]+</code> <strong>does not</strong> include <code>?</code>, so by default the regex matches only the piece before <code>?</code>.</li>
+<li>That means <code>checkMatch('/users/42?tab=posts')</code> will still return <code>true</code> for <code>/users/:userId</code> style paths.</li>
+</ul>
+</li>
+</ul>
+<p>And for params:</p>
+<pre><code class="language-js">extractParams(path) {
+  const { groups } = regex.exec(path)
+  return groups
+}
+</code></pre>
+<p>If the regex matches, <code>regex.exec(path)</code> returns an object like:</p>
+<pre><code class="language-js">{
+  0: '/users/42',
+  groups: { userId: '42' },
+  // ...
+}
+</code></pre>
+<p>So <code>groups</code> becomes the <code>params</code> object.</p>
+<p>In practice, the router calls:</p>
+<pre><code class="language-js">this.#params = matcher.extractParams(path)
+</code></pre>
+<p>and components later read <code>this.appContext.router.params</code> (as described in <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>).</p>
+<p>Analogy: for param routes, the matcher is a stencil that both checks the outline and also has labels for each cut‑out (“this slot is userId, that slot is postId”).</p>
+<hr />
+<h2>6. Matchers <strong>without</strong> params: <code>/</code>, <code>/about</code>, <code>*</code></h2>
+<p>Routes without <code>:</code> are simpler: there’s nothing to extract into params, only a yes/no match.</p>
+<h3>6.1 Building the matcher</h3>
+<pre><code class="language-js">function makeMatcherWithoutParams(route) {
+  const regex = makeRouteWithoutParamsRegex(route)
+  const isRedirect = typeof route.redirect === 'string'
+
+  return {
+    route,
+    isRedirect,
+    checkMatch(path) {
+      return regex.test(path)
+    },
+    extractParams() {
+      return {}
+    },
+    extractQuery,
+  }
+}
+</code></pre>
+<p>Differences from the param‑based matcher:</p>
+<ul>
+<li><code>extractParams</code> always returns an empty object.</li>
+<li>The regex generation is a bit different; it must handle the catch‑all <code>*</code>.</li>
+</ul>
+<h3>6.2 Building regex for non‑param routes</h3>
+<pre><code class="language-js">function makeRouteWithoutParamsRegex({ path }) {
+  if (path === CATCH_ALL_ROUTE) {
+    return new RegExp('^.*$')
+  }
+
+  return new RegExp(`^${path}$`)
+}
+</code></pre>
+<p>Two cases:</p>
+<ol>
+<li>
+<p><code>path === '*'</code>:</p>
+<pre><code class="language-js">new RegExp('^.*$')
+</code></pre>
+<p>This matches <strong>any</strong> string, so it’s the fallback route (“404” route).</p>
+</li>
+<li>
+<p>Any other path:</p>
+<pre><code class="language-js">new RegExp(`^${path}$`)
+</code></pre>
+<p>So:</p>
+<ul>
+<li><code>/</code> → <code>/^\/$/</code></li>
+<li><code>/about</code> → <code>/^\/about$/</code></li>
+</ul>
+<p>Again, these match the path including optional <code>?query</code> bits, but only at the string level. Query extraction is handled separately.</p>
+</li>
+</ol>
+<p>This simple approach has one important implication: if you have <code>*</code> at the end of your routes array, it will match anything that all previous routes did not match. That’s how you implement “404 not found”.</p>
+<hr />
+<h2>7. Extracting query strings: <code>?search=abc&amp;foo=bar</code></h2>
+<p>Route matchers share a helper for queries:</p>
+<pre><code class="language-js">function extractQuery(path) {
+  const queryIndex = path.indexOf('?')
+
+  if (queryIndex === -1) {
+    return {}
+  }
+
+  const search = new URLSearchParams(path.slice(queryIndex + 1))
+
+  return Object.fromEntries(search.entries())
+}
+</code></pre>
+<p>Step by step:</p>
+<ol>
+<li>
+<p>Find the index of <code>?</code>:</p>
+<pre><code class="language-js">const queryIndex = path.indexOf('?')
+</code></pre>
+<ul>
+<li>If no <code>?</code>, there is no query: return <code>{}</code>.</li>
+</ul>
+</li>
+<li>
+<p>Slice off everything after <code>?</code>:</p>
+<pre><code class="language-js">const search = new URLSearchParams(path.slice(queryIndex + 1))
+</code></pre>
+<p>For <code>/users/42?tab=posts&amp;sort=asc</code>, <code>path.slice(queryIndex + 1)</code> yields <code>tab=posts&amp;sort=asc</code>.</p>
+</li>
+<li>
+<p>Use <code>URLSearchParams</code> to parse it:</p>
+<pre><code class="language-js">const search = new URLSearchParams('tab=posts&amp;sort=asc')
+</code></pre>
+</li>
+<li>
+<p>Turn it into a plain object:</p>
+<pre><code class="language-js">return Object.fromEntries(search.entries())
+</code></pre>
+<p>Result:</p>
+<pre><code class="language-js">{ tab: 'posts', sort: 'asc' }
+</code></pre>
+</li>
+</ol>
+<p>The router uses this in <code>navigateTo</code>:</p>
+<pre><code class="language-js">this.#query = matcher.extractQuery(path)
+</code></pre>
+<p>Then components can access it via <code>this.appContext.router.query</code>.</p>
+<p>Analogy: think of <code>extractQuery</code> as a little machine that takes the “note stuck after the question mark” and reads it into a tidy dictionary.</p>
+<hr />
+<h2>8. How the router uses RouteMatchers</h2>
+<p><code>HashRouter</code> (from <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>) wires all this together.</p>
+<h3>8.1 Creating matchers from routes</h3>
+<p>In <code>router.js</code>, the constructor does:</p>
+<pre><code class="language-js">import { makeRouteMatcher } from './route-matchers'
+import { assert } from './utils/assert'
+
+export class HashRouter {
+  #matchers = []
+
+  constructor(routes = []) {
+    assert(Array.isArray(routes), 'Routes must be an array')
+    this.#matchers = routes.map(makeRouteMatcher)
+  }
+
+  // ...
+}
+</code></pre>
+<p>For each route in your config:</p>
+<ol>
+<li>
+<p><code>makeRouteMatcher(route)</code>:</p>
+<ul>
+<li>Calls <code>validateRoute(route)</code></li>
+<li>Returns either a param‑matcher or a non‑param matcher.</li>
+</ul>
+</li>
+<li>
+<p><code>this.#matchers</code> becomes the full list.</p>
+</li>
+</ol>
+<p>Later, <code>navigateTo(path)</code> uses these matchers:</p>
+<pre><code class="language-js">async navigateTo(path) {
+  const matcher = this.#matchers.find((matcher) =&gt;
+    matcher.checkMatch(path)
+  )
+
+  if (matcher == null) {
+    console.warn(`[Router] No route matches path &quot;${path}&quot;`)
+
+    this.#matchedRoute = null
+    this.#params = {}
+    this.#query = {}
+
+    return
+  }
+
+  if (matcher.isRedirect) {
+    return this.navigateTo(matcher.route.redirect)
+  }
+
+  const from = this.#matchedRoute
+  const to = matcher.route
+  const { shouldNavigate, shouldRedirect, redirectPath } =
+    await this.#canChangeRoute(from, to)
+
+  if (shouldRedirect) {
+    return this.navigateTo(redirectPath)
+  }
+
+  if (shouldNavigate) {
+    this.#matchedRoute = matcher.route
+    this.#params = matcher.extractParams(path)
+    this.#query = matcher.extractQuery(path)
+    this.#pushState(path)
+
+    this.#dispatcher.dispatch(ROUTER_EVENT, { from, to, router: this })
+  }
+}
+</code></pre>
+<p>Key interactions with the matcher:</p>
+<ul>
+<li><code>find((matcher) =&gt; matcher.checkMatch(path))</code> chooses which route applies.</li>
+<li><code>matcher.isRedirect</code> decides whether this is a redirect‑only route.</li>
+<li><code>matcher.extractParams(path)</code> fills <code>router.params</code>.</li>
+<li><code>matcher.extractQuery(path)</code> fills <code>router.query</code>.</li>
+</ul>
+<p>Everything else in <code>navigateTo</code> is about guards, history, and notifications, covered already in <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a>.</p>
+<p>You can now see how clean this keeps the router: all the “does this path fit this route?” logic lives in matchers, not sprinkled through the router.</p>
+<hr />
+<h2>9. One navigation, step by step</h2>
+<p>Let’s walk through a full navigation with the new knowledge, using the same actors as before plus the matcher.</p>
+<p>Participants:</p>
+<ul>
+<li><code>Router</code> – the <code>HashRouter</code> instance</li>
+<li><code>Matcher</code> – the matching RouteMatcher</li>
+<li><code>RouteGuard</code> – the <code>beforeEnter</code> guard, if any</li>
+<li><code>Outlet</code> – <code>RouterOutlet</code> component</li>
+<li><code>DOM</code> – the DOM engine (<code>mountDOM</code> / <code>patchDOM</code>)</li>
+</ul>
+<pre class="mermaid">sequenceDiagram
+  participant Router as Router
+  participant Matcher as Matcher
+  participant RouteGuard as Guard
+  participant Outlet as Outlet
+  participant DOM as Dom
+
+  Router->>Matcher: Check if matcher fits path
+  Matcher-->>Router: Report match and give params and query
+  Router->>RouteGuard: Ask guard if navigation is allowed
+  RouteGuard-->>Router: Respond with allow or redirect
+  Router->>Outlet: Notify route changed with new route
+  Outlet->>DOM: Render component for matched route
+</pre>
+<p>In words:</p>
+<ol>
+<li><code>Router.navigateTo('/users/42?tab=posts')</code> is called, either by <code>RouterLink</code> or <code>popstate</code>.</li>
+<li>The router loops over <code>this.#matchers</code> until one <code>checkMatch</code> returns <code>true</code>.</li>
+<li>With the chosen matcher:
+<ul>
+<li><code>extractParams</code> returns <code>{ userId: '42' }</code></li>
+<li><code>extractQuery</code> returns <code>{ tab: 'posts' }</code></li>
+</ul>
+</li>
+<li>If there is a <code>beforeEnter</code>, it’s invoked; it may allow navigation, block it, or request a redirect.</li>
+<li>If allowed:
+<ul>
+<li>Router updates <code>matchedRoute</code>, <code>params</code>, <code>query</code></li>
+<li>Pushes the new hash into history</li>
+<li>Dispatches a route change event via its internal <code>Dispatcher</code></li>
+</ul>
+</li>
+<li><code>RouterOutlet</code>, which subscribed earlier, receives <code>{ from, to, router }</code>, updates its state, and <code>render()</code> returns the new route’s <code>component</code>.</li>
+<li>The component system runs <code>patchDOM</code> to update the visible UI.</li>
+</ol>
+<p>At the heart of that chain, the RouteMatcher provided the “does this path fit?” and “what are the named pieces?” logic.</p>
+<hr />
+<h2>10. Practical examples and small gotchas</h2>
+<p>Now that you know how matchers and validation work, here are a few concrete patterns and edge cases.</p>
+<h3>10.1 Simple static routes</h3>
+<pre><code class="language-js">const routes = [
+  { path: '/', component: Home },
+  { path: '/about', component: About },
+]
+</code></pre>
+<ul>
+<li>Both are “no‑param” routes → <code>makeMatcherWithoutParams</code>.</li>
+<li><code>extractParams</code> always gives <code>{}</code>.</li>
+<li><code>extractQuery</code> still works, so <code>/about?foo=bar</code> sets <code>router.query</code> to <code>{ foo: 'bar' }</code>.</li>
+</ul>
+<h3>10.2 One param route</h3>
+<pre><code class="language-js">{ path: '/users/:userId', component: User }
+</code></pre>
+<p>For <code>/users/42?tab=posts</code>:</p>
+<ul>
+<li>Matcher regex is something like <code>/^\/users\/(?&lt;userId&gt;[^/]+)$/</code></li>
+<li><code>extractParams</code> gives <code>{ userId: '42' }</code></li>
+<li><code>extractQuery</code> gives <code>{ tab: 'posts' }</code></li>
+</ul>
+<p>Inside <code>User</code>, you’d read:</p>
+<pre><code class="language-js">const { userId } = this.appContext.router.params
+const { tab } = this.appContext.router.query
+</code></pre>
+<h3>10.3 Multiple params</h3>
+<pre><code class="language-js">{ path: '/users/:userId/posts/:postId', component: Post }
+</code></pre>
+<p>For <code>/users/42/posts/99</code>:</p>
+<ul>
+<li>Params become <code>{ userId: '42', postId: '99' }</code>.</li>
+</ul>
+<h3>10.4 Catch‑all 404 route</h3>
+<pre><code class="language-js">{ path: '*', component: NotFound }
+</code></pre>
+<p>Placed at the end of your routes array:</p>
+<pre><code class="language-js">const routes = [
+  { path: '/', component: Home },
+  { path: '/users/:userId', component: User },
+  { path: '*', component: NotFound },
+]
+</code></pre>
+<p>Any path that fails to match <code>/</code> or <code>/users/:userId</code> will match <code>*</code> and show <code>NotFound</code>.</p>
+<h3>10.5 Redirect routes</h3>
+<pre><code class="language-js">{ path: '/old-users', redirect: '/users' }
+</code></pre>
+<ul>
+<li><code>validateRoute</code> ensures redirect path is not the same as <code>path</code>.</li>
+<li>RouteMatcher sets <code>isRedirect: true</code>.</li>
+<li>In <code>navigateTo('/old-users')</code>:
+<ul>
+<li><code>matcher.isRedirect</code> is <code>true</code>, so the router calls <code>navigateTo('/users')</code> immediately.</li>
+<li>That second call matches the real <code>/users</code> route, sets <code>matchedRoute</code> and so on.</li>
+</ul>
+</li>
+</ul>
+<p>You can use this to create nice “legacy URL” redirects.</p>
+<hr />
+<h2>11. How this chapter connects to others</h2>
+<p>RouteMatchers and <code>validateRoute</code> sit at the boundary between URL strings and your component tree:</p>
+<ul>
+<li>They are used by <code>HashRouter</code> from <a href="07_hashrouter_routerlink_routeroutlet.html">HashRouter / RouterLink / RouterOutlet</a> to decide which component to render and what values to put into <code>router.params</code> and <code>router.query</code>.</li>
+<li>The route’s <code>beforeEnter</code> guard, validated by <code>validateRoute</code>, plugs into the router’s navigation logic.</li>
+<li>Once a route is matched, your components are just regular components built with <a href="03_definecomponent_component.html">defineComponent / Component</a>, mounted and patched using <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>, and free to use slots and events as in <a href="06_slots_and_fillslots.html">Slots and fillSlots</a> and <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>.</li>
+</ul>
+<p>You can think of RouteMatchers as the <strong>address decoder</strong> for your app: they translate “what’s in the address bar” into “which component should be on the screen and with which parameters?”</p>
+<hr />
+<h2>12. Recap and what’s next</h2>
+<p>In this chapter you learned:</p>
+<ul>
+<li>How <code>Route</code> objects describe routes with <code>path</code>, <code>component</code>, <code>redirect</code>, and <code>beforeEnter</code>.</li>
+<li>How <code>validateRoute</code> enforces sensible route definitions:
+<ul>
+<li>Paths are non‑empty strings</li>
+<li>They start with <code>/</code> or are <code>*</code></li>
+<li>Redirects don’t loop back to themselves</li>
+</ul>
+</li>
+<li>How <code>makeRouteMatcher</code> converts routes into:
+<ul>
+<li>Param‑based matchers using named regex groups</li>
+<li>Simple matchers for static and <code>*</code> paths</li>
+</ul>
+</li>
+<li>How each matcher exposes:
+<ul>
+<li><code>checkMatch(path)</code> – do I fit this path?</li>
+<li><code>extractParams(path)</code> – what are the <code>:param</code> values?</li>
+<li><code>extractQuery(path)</code> – what are the query parameters?</li>
+</ul>
+</li>
+<li>How <code>HashRouter</code> uses those matchers in its <code>navigateTo</code> flow to keep <code>matchedRoute</code>, <code>params</code>, and <code>query</code> in sync with the URL.</li>
+</ul>
+<p>Now that routing, events, slots, and DOM diffing are all in place, there’s one more invisible piece you’ve already bumped into: the <strong>scheduler</strong>.</p>
+<p>Whenever components mount, unmount, or lifecycle hooks run, the framework doesn’t call everything immediately; it batches work for the “next tick” using a microtask queue. In the next chapter, <a href="09_scheduler_nexttick.html">Scheduler / nextTick</a>, you’ll see how that tiny job queue works, and how to use <code>nextTick</code> to wait for DOM updates before measuring or testing.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="07_hashrouter_routerlink_routeroutlet.html">&larr; HashRouter / RouterLink / RouterOutlet</a></span>
+    <span><a href="09_scheduler_nexttick.html">Scheduler / nextTick &rarr;</a></span>
+  </nav>
+</body>
+</html>

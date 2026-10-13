@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>defineComponent / Component — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 3: defineComponent / Component</h1>
+<p>Imagine you have your nice VNode “blueprints” from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a>, and you know how to build them with <code>h</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>.</p>
+<p>You can already describe <strong>what</strong> the UI should look like.</p>
+<p>But what happens when:</p>
+<ul>
+<li>The number in a counter should go up when you click</li>
+<li>A modal should appear, then disappear</li>
+<li>A router outlet should react when the URL changes</li>
+</ul>
+<p>You need a place where <strong>state lives</strong>, where <strong>methods</strong> can change it, and where a <strong>render function</strong> can turn that state into VNodes, over and over.</p>
+<p>This is what <code>defineComponent</code> and the <code>Component</code> class are for.</p>
+<p>They’re like writing a <strong>recipe</strong> (render + behavior), and the framework gives you a <strong>Chef class</strong> back. Every Chef instance:</p>
+<ul>
+<li>Has its own ingredients (props + state)</li>
+<li>Follows the same recipe (<code>render</code>, methods, lifecycle)</li>
+<li>Cooks its own dish (its piece of the DOM tree) independently</li>
+</ul>
+<hr />
+<h2>1. What problem are components solving?</h2>
+<p>Consider a super-minimal counter built only with <code>h</code> and some plain functions:</p>
+<pre><code class="language-js">import { h } from './h'
+
+let count = 0
+
+function renderCounter() {
+  return h('button', { on: { click: onClick } }, [`Clicked ${count} times`])
+}
+
+function onClick() {
+  count++
+  // Now what?
+}
+</code></pre>
+<p>When <code>onClick</code> runs:</p>
+<ul>
+<li><code>count</code> changes</li>
+<li>But the DOM doesn’t magically re-render</li>
+<li>You’d have to manually call your own “rerender” function</li>
+<li>And that function would need to know:
+<ul>
+<li>Where in the DOM the old VNodes live</li>
+<li>How to run <code>patchDOM</code> correctly</li>
+<li>How to clean up when elements go away</li>
+</ul>
+</li>
+</ul>
+<p>Quickly, every piece of interactive UI turns into spaghetti: global variables, manual calls to re-render, manual cleanup.</p>
+<p>We want something more like:</p>
+<pre><code class="language-js">const Counter = defineComponent({
+  state() {
+    return { count: 0 }
+  },
+
+  render() {
+    return h('button', {
+      on: {
+        click: () =&gt; this.updateState({ count: this.state.count + 1 }),
+      },
+    }, [`Clicked ${this.state.count} times`])
+  },
+})
+</code></pre>
+<p>And then let the framework worry about:</p>
+<ul>
+<li>Creating instances</li>
+<li>Mounting them into the DOM</li>
+<li>Re-rendering on state or prop changes</li>
+<li>Patching the DOM with <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a></li>
+<li>Running lifecycle hooks like <code>onMounted</code> and <code>onUnmounted</code></li>
+</ul>
+<p>That is exactly what <code>defineComponent</code> does.</p>
+<hr />
+<h2>2. The shape of a component definition</h2>
+<p>You create a component by calling <code>defineComponent</code> with an object describing the recipe:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+
+export const Counter = defineComponent({
+  state(props) {
+    return { count: props.initial ?? 0 }
+  },
+
+  render() {
+    const { count } = this.state
+
+    return h('button', {
+      on: {
+        click: () =&gt; this.updateState({ count: count + 1 }),
+      },
+    }, [`Clicked ${count} times`])
+  },
+})
+</code></pre>
+<p>The object you pass to <code>defineComponent</code> can contain:</p>
+<ul>
+<li><code>state(props)</code> – returns the initial state object</li>
+<li><code>render()</code> – returns a VNode tree using <code>h</code> / <code>hFragment</code> / <code>hSlot</code></li>
+<li><code>onMounted()</code> – runs after the component is mounted (lifecycle)</li>
+<li><code>onUnmounted()</code> – runs after the component is destroyed (lifecycle)</li>
+<li>Any additional keys – become <strong>instance methods</strong>, accessible as <code>this.methodName()</code></li>
+</ul>
+<p>Formally (from the JSDoc in <code>component.js</code>, simplified):</p>
+<pre><code class="language-js">/**
+ * @typedef DefineComponentArgs
+ * @type {object}
+ * @property {function} render
+ * @property {(props: Object?) =&gt; Object} state
+ * @property {() =&gt; Promise&lt;void&gt;|void} onMounted
+ * @property {() =&gt; Promise&lt;void&gt;|void} onUnmounted
+ * @property {Object&lt;string, Function&gt;} methods
+ */
+</code></pre>
+<p><code>defineComponent(definition)</code> returns a <strong>class</strong> called <code>Component</code> (a constructor function in JS terms). You rarely instantiate it yourself; the framework does it for you when you use the component as a <code>tag</code> in <code>h</code>:</p>
+<pre><code class="language-js">import { h } from './h'
+import { Counter } from './Counter'
+
+// Inside some other render function
+const vdom = h(Counter, { initial: 10 })
+</code></pre>
+<p>That <code>h(Counter, ...)</code> call produces a VNode of type <code>DOM_TYPES.COMPONENT</code>. Then <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a> knows: “Ah, this is a component, I must create a <code>Component</code> instance”.</p>
+<hr />
+<h2>3. What <code>defineComponent</code> actually builds</h2>
+<p>Let’s look at a trimmed-down version of <code>defineComponent</code> to understand the pieces.</p>
+<h3>3.1 The high-level function</h3>
+<pre><code class="language-js">export function defineComponent({
+  render,
+  state,
+  onMounted = emptyFn,
+  onUnmounted = emptyFn,
+  ...methods
+}) {
+  class Component {
+    // private fields, constructor, methods...
+  }
+
+  for (const methodName in methods) {
+    Component.prototype[methodName] = methods[methodName]
+  }
+
+  return Component
+}
+</code></pre>
+<p>Piece by piece:</p>
+<ol>
+<li>
+<p><strong>Destructure the definition</strong></p>
+<ul>
+<li><code>render</code>, <code>state</code>, <code>onMounted</code>, <code>onUnmounted</code> are pulled out.</li>
+<li>Any other keys go into <code>methods</code> (rest object).</li>
+</ul>
+</li>
+<li>
+<p><strong>Create a <code>Component</code> class</strong></p>
+<ul>
+<li>All instances share the same logic (render, lifecycle, helper methods).</li>
+<li>Each instance has its own <code>props</code>, <code>state</code>, and internal fields.</li>
+</ul>
+</li>
+<li>
+<p><strong>Attach user methods</strong></p>
+<p>If you pass:</p>
+<pre><code class="language-js">defineComponent({
+  state() { return {} },
+  render() { /*...*/ },
+  increment() { /*...*/ },
+})
+</code></pre>
+<p>Then <code>increment</code> gets attached to <code>Component.prototype.increment</code>, so you can call <code>this.increment()</code> inside <code>render</code> or other methods.</p>
+</li>
+<li>
+<p><strong>Return the class</strong></p>
+<p>That class is your <em>component type</em> — the “Chef recipe”.</p>
+</li>
+</ol>
+<hr />
+<h2>4. What a Component instance looks like</h2>
+<p>Inside <code>defineComponent</code>, the <code>Component</code> class is defined. It has:</p>
+<ul>
+<li>Public fields:
+<ul>
+<li><code>props</code></li>
+<li><code>state</code></li>
+</ul>
+</li>
+<li>Private fields (prefixed with <code>#</code> in the source):
+<ul>
+<li><code>#vdom</code> – current VNode tree</li>
+<li><code>#hostEl</code> – actual DOM parent element where this component is mounted</li>
+<li><code>#isMounted</code> – has this instance been mounted?</li>
+<li><code>#children</code> – external VNodes for slots</li>
+<li><code>#dispatcher</code> and subscriptions – for <code>emit</code> and parent event handlers</li>
+<li><code>#appContext</code> – shared app-level context (router, etc.)</li>
+</ul>
+</li>
+</ul>
+<p>You don’t need to memorize them, but it helps to know what the instance is managing for you.</p>
+<h3>4.1 Constructor: props and initial state</h3>
+<p>From <code>component.js</code>:</p>
+<pre><code class="language-js">constructor(props = {}, eventHandlers = {}, parentComponent = null) {
+  this.props = props
+  this.state = state ? state(props) : {}
+  this.#eventHandlers = eventHandlers
+  this.#parentComponent = parentComponent
+}
+</code></pre>
+<p>Key ideas:</p>
+<ul>
+<li>Each instance receives its own <strong>props</strong> object.</li>
+<li>It calls your <code>state(props)</code> function once to get the initial <code>state</code>.</li>
+<li>It stores:
+<ul>
+<li><code>eventHandlers</code> – functions that the parent passes to listen to child events (see <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>).</li>
+<li><code>parentComponent</code> – used when calling event handlers so <code>this</code> inside them refers to the parent.</li>
+</ul>
+</li>
+</ul>
+<p>Analogy: when a new Chef starts work, they get a written order (<code>props</code>) and assemble their first prep set (<code>state</code>) based on that order.</p>
+<hr />
+<h2>5. Rendering and updating: from state to DOM</h2>
+<p>The heart of <code>Component</code> is the render-and-patch cycle.</p>
+<h3>5.1 Calling your <code>render()</code> with the right <code>this</code></h3>
+<p>The component instance has its own <code>render</code> method that wraps your definition’s <code>render</code>:</p>
+<pre><code class="language-js">render() {
+  const vdom = render.call(this)
+
+  if (didCreateSlot()) {
+    fillSlots(vdom, this.#children)
+    resetDidCreateSlot()
+  }
+
+  return vdom
+}
+</code></pre>
+<p>What happens here:</p>
+<ul>
+<li><code>render.call(this)</code> runs your render function with <code>this</code> bound to the Component instance:
+<ul>
+<li>You can access <code>this.props</code>, <code>this.state</code>, <code>this.appContext</code></li>
+<li>You can call <code>this.updateState(...)</code>, <code>this.emit(...)</code>, your custom methods, etc.</li>
+</ul>
+</li>
+<li>After that, the framework checks <code>didCreateSlot()</code> (from <code>hSlot</code> in <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>):
+<ul>
+<li>If you used any <code>hSlot()</code> calls, <code>fillSlots</code> walks the VNode tree and replaces those slots with the provided external content.</li>
+</ul>
+</li>
+<li>The final VNode tree is returned.</li>
+</ul>
+<p>Render functions always return <strong>VNodes</strong>, never real DOM. The actual DOM work is delegated to <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</p>
+<h3>5.2 Mounting a component instance</h3>
+<p>When <code>mountDOM</code> meets a component VNode, it calls <code>createComponentNode</code>:</p>
+<pre><code class="language-js">function createComponentNode(vdom, parentEl, index, hostComponent) {
+  const { tag: Component, children } = vdom
+  const { props, events } = extractPropsAndEvents(vdom)
+  const component = new Component(props, events, hostComponent)
+
+  component.setExternalContent(children)
+  component.setAppContext(hostComponent?.appContext ?? {})
+
+  component.mount(parentEl, index)
+  vdom.component = component
+  vdom.el = component.firstElement
+}
+</code></pre>
+<p>From the component instance side, <code>mount</code> looks like:</p>
+<pre><code class="language-js">mount(hostEl, index = null) {
+  if (this.#isMounted) {
+    throw new Error('Component is already mounted')
+  }
+
+  this.#vdom = this.render()
+  mountDOM(this.#vdom, hostEl, index, this)
+  this.#wireEventHandlers()
+
+  this.#isMounted = true
+  this.#hostEl = hostEl
+}
+</code></pre>
+<p>Summary:</p>
+<ul>
+<li>The instance calls its own <code>render()</code> → gets a VNode tree.</li>
+<li><code>mountDOM</code> mounts that VNode tree into <code>hostEl</code> at <code>index</code>.</li>
+<li>Event handlers for <code>emit</code> are wired using the <code>Dispatcher</code>.</li>
+<li>Flags and references are updated (<code>#isMounted</code>, <code>#hostEl</code>, <code>#vdom</code>).</li>
+<li>Back in <code>mountDOM</code>, <code>vdom.component</code> is set, and <code>vdom.el</code> points at the <strong>first real DOM element</strong> of this component (important for moving components around in <a href="04_mountdom_destroydom_patchdom.html">patchDOM</a>).</li>
+</ul>
+<h3>5.3 Updating state and props</h3>
+<p>A key promise of components: <strong>you never re-render manually</strong>. You just call:</p>
+<ul>
+<li><code>this.updateState({ ... })</code> to change state</li>
+<li>Or, from outside, <code>childComponent.updateProps({ ... })</code> to change props</li>
+</ul>
+<p>And the component takes care of re-rendering and patching.</p>
+<h4>5.3.1 <code>updateState</code></h4>
+<pre><code class="language-js">updateState(state) {
+  this.state = { ...this.state, ...state }
+  this.#patch()
+}
+</code></pre>
+<p>This:</p>
+<ol>
+<li>Shallow-merges the new state into the existing <code>this.state</code>.</li>
+<li>Calls a private <code>#patch()</code> method.</li>
+</ol>
+<p><code>#patch()</code> is where VNode diffing kicks in:</p>
+<pre><code class="language-js">#patch() {
+  if (!this.#isMounted) {
+    throw new Error('Component is not mounted')
+  }
+
+  const vdom = this.render()
+  this.#vdom = patchDOM(this.#vdom, vdom, this.#hostEl, this)
+}
+</code></pre>
+<ul>
+<li>Calls <code>render()</code> again to get a new VNode tree.</li>
+<li>Calls <code>patchDOM(oldVdom, newVdom, hostEl, this)</code>:
+<ul>
+<li>That function compares VNodes (using <code>areNodesEqual</code> from <code>nodes-equal.js</code>).</li>
+<li>It updates DOM nodes using the diff logic you’ll see in detail in <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</li>
+</ul>
+</li>
+<li>Stores the new VNode as <code>#vdom</code> for future patches.</li>
+</ul>
+<p>You never touch the DOM directly here; you just update <code>this.state</code>.</p>
+<h4>5.3.2 <code>updateProps</code></h4>
+<p>Props follow the same pattern, but are meant to be updated by the parent, not by the component itself:</p>
+<pre><code class="language-js">updateProps(props) {
+  this.props = { ...this.props, ...props }
+  this.#patch()
+}
+</code></pre>
+<p><code>patchComponent</code> in <code>patch-dom.js</code> calls this for you when a parent’s render produces a new component VNode:</p>
+<pre><code class="language-js">function patchComponent(oldVdom, newVdom) {
+  const { component } = oldVdom
+  const { children } = newVdom
+  const { props } = extractPropsAndEvents(newVdom)
+
+  component.setExternalContent(children)
+  component.updateProps(props)
+
+  newVdom.component = component
+  newVdom.el = component.firstElement
+}
+</code></pre>
+<p>So you can think:</p>
+<ul>
+<li>Parent re-renders → produces new VNodes for children.</li>
+<li>For each component child, <code>patchDOM</code>:
+<ul>
+<li>Updates its <code>props</code></li>
+<li>Updates its external slot content</li>
+<li>Lets that child handle its own patching via <code>updateProps</code> and <code>#patch</code>.</li>
+</ul>
+</li>
+</ul>
+<hr />
+<h2>6. Lifecycle: mounting and unmounting hooks</h2>
+<p>Many components need to do side work:</p>
+<ul>
+<li>Subscribe to router events</li>
+<li>Start timers</li>
+<li>Attach global listeners</li>
+</ul>
+<p>Then undo that work when they disappear.</p>
+<p><code>defineComponent</code> lets you provide two lifecycle hooks:</p>
+<ul>
+<li><code>onMounted()</code> – runs after DOM is mounted and event wiring is done</li>
+<li><code>onUnmounted()</code> – runs after DOM is destroyed</li>
+</ul>
+<p>You define them like:</p>
+<pre><code class="language-js">export const Clock = defineComponent({
+  state() {
+    return { time: new Date().toLocaleTimeString(), timerId: null }
+  },
+
+  onMounted() {
+    const id = setInterval(() =&gt; {
+      this.updateState({
+        time: new Date().toLocaleTimeString(),
+      })
+    }, 1000)
+
+    this.updateState({ timerId: id })
+  },
+
+  onUnmounted() {
+    clearInterval(this.state.timerId)
+  },
+
+  render() {
+    return h('div', null, [`Time: ${this.state.time}`])
+  },
+})
+</code></pre>
+<p>How are these called?</p>
+<ul>
+<li>
+<p><code>mountDOM</code> schedules <code>component.onMounted()</code> with the scheduler:</p>
+<pre><code class="language-js">createComponentNode(...)
+enqueueJob(() =&gt; vdom.component.onMounted())
+</code></pre>
+</li>
+<li>
+<p><code>destroyDOM</code> does something similar for unmount:</p>
+<pre><code class="language-js">case DOM_TYPES.COMPONENT: {
+  vdom.component.unmount()
+  enqueueJob(() =&gt; vdom.component.onUnmounted())
+  break
+}
+</code></pre>
+</li>
+</ul>
+<p>And inside the component:</p>
+<pre><code class="language-js">onMounted() {
+  return Promise.resolve(onMounted.call(this))
+}
+
+onUnmounted() {
+  return Promise.resolve(onUnmounted.call(this))
+}
+</code></pre>
+<p>So:</p>
+<ul>
+<li>Your hooks run with <code>this</code> bound to the component instance.</li>
+<li>They can be async or sync. The framework wraps them in <code>Promise.resolve</code>.</li>
+</ul>
+<hr />
+<h2>7. Slots and external content</h2>
+<p>From <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a> and <a href="06_slots_and_fillslots.html">Slots and fillSlots</a>, you know:</p>
+<ul>
+<li><code>hSlot()</code> is a placeholder for content that the parent passes as children.</li>
+<li><code>fillSlots</code> walks the component’s VNode tree and swaps <code>SLOT</code> nodes with actual content.</li>
+</ul>
+<p>How does the component know which external content belongs to it?</p>
+<h3>7.1 Saving children as external content</h3>
+<p>When <code>mountDOM</code> creates a component node:</p>
+<pre><code class="language-js">const { tag: Component, children } = vdom
+// ...
+const component = new Component(props, events, hostComponent)
+component.setExternalContent(children)
+</code></pre>
+<p>The instance stores those in a private field:</p>
+<pre><code class="language-js">setExternalContent(children) {
+  this.#children = children
+}
+</code></pre>
+<p>During render, if the component created any slot nodes, <code>fillSlots</code> uses <code>this.#children</code> as the external content to insert:</p>
+<pre><code class="language-js">render() {
+  const vdom = render.call(this)
+
+  if (didCreateSlot()) {
+    fillSlots(vdom, this.#children)
+    resetDidCreateSlot()
+  }
+
+  return vdom
+}
+</code></pre>
+<p>When props change via <code>patchComponent</code>, the new external children are set again:</p>
+<pre><code class="language-js">component.setExternalContent(children)
+component.updateProps(props)
+</code></pre>
+<p>So from inside your component all you do is:</p>
+<pre><code class="language-js">import { h, hSlot } from './h'
+
+const Card = defineComponent({
+  render() {
+    return h('div', { class: 'card' }, [
+      h('div', { class: 'card-body' }, [hSlot()]),
+    ])
+  },
+})
+</code></pre>
+<p>And from outside:</p>
+<pre><code class="language-js">h(Card, null, [
+  h('p', null, ['Hello inside card']),
+])
+</code></pre>
+<p>The wiring of which children go into which slot is handled automatically by the component infrastructure and <code>fillSlots</code>.</p>
+<hr />
+<h2>8. Components as DOM “islands”: elements and offset</h2>
+<p>Sometimes other code needs to know:</p>
+<ul>
+<li>Which real DOM elements make up this component’s root(s)?</li>
+<li>Where exactly in the parent they start?</li>
+</ul>
+<p>For example, <code>patchChildren</code> in <code>patch-dom.js</code> must move components around (including those with fragment roots).</p>
+<p>The <code>Component</code> class exposes two getters for this:</p>
+<h3>8.1 <code>elements</code>: all root DOM elements</h3>
+<pre><code class="language-js">get elements() {
+  if (this.#vdom == null) {
+    return []
+  }
+
+  if (this.#vdom.type === DOM_TYPES.FRAGMENT) {
+    return extractChildren(this.#vdom).flatMap((child) =&gt; {
+      if (child.type === DOM_TYPES.COMPONENT) {
+        return child.component.elements
+      }
+
+      return [child.el]
+    })
+  }
+
+  return [this.#vdom.el]
+}
+</code></pre>
+<p>If the top-level VNode is:</p>
+<ul>
+<li>A single <code>ELEMENT</code> – <code>elements</code> is <code>[thatElement]</code>.</li>
+<li>A <code>FRAGMENT</code> – it flattens children:
+<ul>
+<li>If a child is a component, returns its own <code>elements</code>.</li>
+<li>Otherwise returns that child’s <code>el</code>.</li>
+</ul>
+</li>
+</ul>
+<p>This lets <code>mountDOM</code> and <code>patchDOM</code> treat a component as a <strong>block</strong> of DOM siblings, whether it has 1 root node or 10.</p>
+<h3>8.2 <code>firstElement</code> and <code>offset</code></h3>
+<p>Two more helpers:</p>
+<pre><code class="language-js">get firstElement() {
+  return this.elements[0]
+}
+
+get offset() {
+  if (this.#vdom.type === DOM_TYPES.FRAGMENT) {
+    return Array.from(this.#hostEl.children).indexOf(this.firstElement)
+  }
+
+  return 0
+}
+</code></pre>
+<ul>
+<li><code>firstElement</code> – useful when inserting or moving an entire component. <code>mountDOM</code> sets <code>vdom.el = component.firstElement</code> for component VNodes.</li>
+<li><code>offset</code> – for fragment-rooted components, gives the index of the first element in the parent’s children. <code>patchChildren</code> uses this to adjust indices when diffing children inside components.</li>
+</ul>
+<p>You rarely use these manually, but they’re vital glue for the diffing algorithm you’ll explore in <a href="04_mountdom_destroydom_patchDOM.md">mountDOM / destroyDOM / patchDOM</a>.</p>
+<hr />
+<h2>9. A full journey: from app to component to DOM</h2>
+<p>To tie everything together, here’s a small scenario:</p>
+<ul>
+<li>You call <code>createApp(RootComponent, props)</code> from <a href="10_createapp_application_context.html">createApp / Application context</a>.</li>
+<li>The app mounts, which causes:
+<ul>
+<li>A root VNode <code>h(RootComponent, props)</code> to be created.</li>
+<li><code>mountDOM</code> to see a component VNode.</li>
+<li>A <code>RootComponent</code> instance to be created and mounted.</li>
+</ul>
+</li>
+</ul>
+<p>Here is that flow as a sequence diagram.</p>
+<pre class="mermaid">sequenceDiagram
+  participant App as App
+  participant Root as RootComp
+  participant Render as RenderFn
+  participant DOM as DomLayer
+
+  App->>DOM: Mount root vnode into container
+  DOM->>Root: Create component instance with props
+  Root->>Render: Call render to get vnodes
+  Render-->>Root: Return vnode tree
+  Root->>DOM: Mount vnode tree into host element
+  DOM-->>App: Root dom tree is now attached
+</pre>
+<p>Inside that invisible <code>Render</code> box, your <code>render</code> uses <code>h</code>, <code>hFragment</code>, <code>hSlot</code> exactly as described in <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>. And inside <code>DOM</code>, all the logic from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a> is responsible for actually touching the real DOM.</p>
+<hr />
+<h2>10. Putting it all together: a small interactive example</h2>
+<p>Here is a tiny, self-contained component using most of what we covered:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+
+export const ToggleMessage = defineComponent({
+  state() {
+    return { visible: true }
+  },
+
+  onMounted() {
+    console.log('ToggleMessage mounted')
+  },
+
+  onUnmounted() {
+    console.log('ToggleMessage unmounted')
+  },
+
+  toggle() {
+    this.updateState({ visible: !this.state.visible })
+  },
+
+  render() {
+    const { visible } = this.state
+
+    return h('div', null, [
+      h('button', {
+        on: { click: () =&gt; this.toggle() },
+      }, ['Toggle']),
+
+      visible ? h('p', null, ['Hello there']) : null,
+    ])
+  },
+})
+</code></pre>
+<p>Once this component is used as <code>h(ToggleMessage)</code>, everything else is automatic:</p>
+<ul>
+<li><code>state()</code> sets <code>{ visible: true }</code>.</li>
+<li><code>render()</code> returns VNodes with text and buttons.</li>
+<li>Clicking the button calls <code>this.toggle()</code>.</li>
+<li><code>toggle()</code> uses <code>updateState</code>, which:
+<ul>
+<li>Calls <code>render()</code> again</li>
+<li>Uses <code>patchDOM</code> to update only what changed (<code>&lt;p&gt;</code> may appear or disappear)</li>
+</ul>
+</li>
+<li><code>onMounted</code> and <code>onUnmounted</code> log lifecycle events.</li>
+</ul>
+<p>You never once called <code>document.createElement</code> or <code>appendChild</code> manually.</p>
+<hr />
+<h2>11. Recap</h2>
+<p>In this chapter you saw how <code>defineComponent</code> and the <code>Component</code> class:</p>
+<ul>
+<li>Turn a plain object definition (<code>state</code>, <code>render</code>, lifecycle, methods) into a <strong>component class</strong>.</li>
+<li>Let you write render functions that use VNodes (<code>h</code>, <code>hFragment</code>, <code>hSlot</code>) instead of DOM APIs.</li>
+<li>Manage:
+<ul>
+<li>Initial state and props</li>
+<li>Re-rendering on <code>updateState</code> / <code>updateProps</code></li>
+<li>Lifecycle hooks (<code>onMounted</code>, <code>onUnmounted</code>)</li>
+<li>Slots and external children</li>
+<li>Integration with the diffing layer and scheduler</li>
+</ul>
+</li>
+</ul>
+<p>The analogy to keep in mind:</p>
+<ul>
+<li><code>defineComponent</code> is your <strong>recipe</strong>.</li>
+<li>The returned <code>Component</code> class is your <strong>Chef type</strong>.</li>
+<li>Each instance is a <strong>Chef on the line</strong> with its own ingredients (props + state) cooking its own dish (DOM subtree) from the same recipe.</li>
+</ul>
+<p>Now that you know how components describe their UI and behavior, the next natural question is: <strong>how does the framework efficiently update the real DOM when those components re-render?</strong></p>
+<p>In the next chapter, <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>, you’ll dive into the machinery that:</p>
+<ul>
+<li>Builds DOM from VNodes the first time</li>
+<li>Diffs old and new VNode trees</li>
+<li>Applies minimal changes to the browser DOM</li>
+<li>Cleans everything up when components go away</li>
+</ul>
+
+  <nav class="chapter-nav">
+    <span><a href="02_h_hstring_hfragment_hslot.html">&larr; h / hString / hFragment / hSlot</a></span>
+    <span><a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM &rarr;</a></span>
+  </nav>
+</body>
+</html>

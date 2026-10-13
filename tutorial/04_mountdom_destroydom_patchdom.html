@@ -1,0 +1,1081 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mountDOM / destroyDOM / patchDOM — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 4: mountDOM / destroyDOM / patchDOM</h1>
+<p>Imagine you click a button in your app and a list item disappears.</p>
+<p>On the screen, that might mean:</p>
+<ul>
+<li>Removing one <code>&lt;li&gt;</code> from the middle of a <code>&lt;ul&gt;</code></li>
+<li>Updating a counter somewhere else</li>
+<li>Maybe even tearing down a whole component if that item was a reusable widget</li>
+</ul>
+<p>But your JavaScript code didn’t say “remove the third DOM child, then decrement that span, then detach these listeners.” It just re-ran a <code>render()</code> function that returned a new VNode tree, like we built in:</p>
+<ul>
+<li><a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a></li>
+<li><a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a></li>
+<li><a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+</ul>
+<p>So: <strong>who actually touches the real DOM?</strong></p>
+<p>That’s the job of three functions:</p>
+<ul>
+<li><code>mountDOM</code> – build the initial DOM from a VNode tree</li>
+<li><code>patchDOM</code> – compare an old VNode tree and a new one, and apply the smallest DOM changes</li>
+<li><code>destroyDOM</code> – tear the DOM down and clean up</li>
+</ul>
+<p>They’re like a construction crew working from blueprints:</p>
+<ul>
+<li><code>mountDOM</code> builds the building</li>
+<li><code>patchDOM</code> remodels just the changed rooms</li>
+<li><code>destroyDOM</code> demolishes the building safely</li>
+</ul>
+<p>This chapter is about understanding how that crew works.</p>
+<hr />
+<h2>1. Where these functions fit in the big picture</h2>
+<p>Let’s connect a full UI cycle:</p>
+<ol>
+<li>A component instance has <code>state</code> and <code>props</code> (from <a href="03_definecomponent_component.html">defineComponent / Component</a>).</li>
+<li>The component’s <code>render()</code> returns a <strong>VNode tree</strong> using <code>h</code>, <code>hFragment</code>, <code>hSlot</code> (from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>).</li>
+<li>On first render, <code>mountDOM</code> walks that VNode tree and <strong>creates real DOM nodes</strong>.</li>
+<li>When <code>state</code> or <code>props</code> change, the component re-runs <code>render()</code> to get a <strong>new VNode tree</strong>.</li>
+<li><code>patchDOM</code> compares <strong>old vs new</strong> and <strong>mutates the existing DOM</strong>.</li>
+<li>When something goes away (component unmount, route change, full app unmount), <code>destroyDOM</code> walks the old tree and <strong>removes DOM + listeners + components</strong>.</li>
+</ol>
+<p>The only way the browser ever hears from your framework is through these three functions.</p>
+<p>Let’s walk them one by one.</p>
+<hr />
+<h2>2. mountDOM: from blueprint to real DOM</h2>
+<p>Think of <code>mountDOM</code> as “print this blueprint as a real house.”</p>
+<p>Its signature:</p>
+<pre><code class="language-js">export function mountDOM(vdom, parentEl, index, hostComponent = null) {
+  if (parentEl == null) {
+    throw new Error('[mountDOM] Parent element is null')
+  }
+
+  switch (vdom.type) {
+    case DOM_TYPES.TEXT: {
+      createTextNode(vdom, parentEl, index)
+      break
+    }
+
+    case DOM_TYPES.ELEMENT: {
+      createElementNode(vdom, parentEl, index, hostComponent)
+      break
+    }
+
+    case DOM_TYPES.FRAGMENT: {
+      createFragmentNodes(vdom, parentEl, index, hostComponent)
+      break
+    }
+
+    case DOM_TYPES.COMPONENT: {
+      createComponentNode(vdom, parentEl, index, hostComponent)
+      enqueueJob(() =&gt; vdom.component.onMounted())
+      break
+    }
+
+    default: {
+      throw new Error(`Can't mount DOM of type: ${vdom.type}`)
+    }
+  }
+}
+</code></pre>
+<p>Key ideas:</p>
+<ul>
+<li>It <strong>switches on <code>vdom.type</code></strong> (from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a>):
+<ul>
+<li>text</li>
+<li>element</li>
+<li>fragment</li>
+<li>component</li>
+</ul>
+</li>
+<li>It always:
+<ul>
+<li>Creates the appropriate real DOM (or component instance)</li>
+<li>Stores references back on the VNode (<code>vdom.el</code>, <code>vdom.component</code>)</li>
+<li>Inserts the result into <code>parentEl</code> at <code>index</code> if one is provided</li>
+</ul>
+</li>
+</ul>
+<p>It never sees <code>DOM_TYPES.SLOT</code> because slots are resolved <em>inside</em> components before mounting, using <code>fillSlots</code> from <a href="06_slots_and_fillslots.html">Slots and fillSlots</a>.</p>
+<p>Let’s look at each case.</p>
+<hr />
+<h3>2.1 Mounting text nodes</h3>
+<p>Blueprint: a <code>TEXT</code> VNode from <code>hString</code> or via <code>h</code>:</p>
+<pre><code class="language-js">const textVNode = { type: 'text', value: 'Hello' }
+</code></pre>
+<p><code>mountDOM</code> calls:</p>
+<pre><code class="language-js">function createTextNode(vdom, parentEl, index) {
+  const { value } = vdom
+
+  const textNode = document.createTextNode(value)
+  vdom.el = textNode
+
+  insert(textNode, parentEl, index)
+}
+</code></pre>
+<p>What happens:</p>
+<ul>
+<li>Creates a real <code>Text</code> node with the correct string</li>
+<li>Stores it on <code>vdom.el</code></li>
+<li>Inserts it into the parent at a specific position (via <code>insert</code> – we’ll see it soon)</li>
+</ul>
+<p>Analogy: this is like writing the label on a sticky note and placing it in the right spot.</p>
+<hr />
+<h3>2.2 Mounting element nodes</h3>
+<p>Blueprint: an <code>ELEMENT</code> VNode from <code>h('button', props, children)</code>:</p>
+<pre><code class="language-js">const buttonVNode = {
+  type: 'element',
+  tag: 'button',
+  props: { id: 'save', on: { click: handler } },
+  children: [ /* text or other VNodes */ ],
+}
+</code></pre>
+<p><code>mountDOM</code> delegates to:</p>
+<pre><code class="language-js">function createElementNode(vdom, parentEl, index, hostComponent) {
+  const { tag, children } = vdom
+
+  const element = document.createElement(tag)
+  addProps(element, vdom, hostComponent)
+  vdom.el = element
+
+  children.forEach((child) =&gt; mountDOM(child, element, null, hostComponent))
+  insert(element, parentEl, index)
+}
+</code></pre>
+<p>Step by step:</p>
+<ol>
+<li><code>document.createElement(tag)</code> creates a real DOM element.</li>
+<li><code>addProps</code> applies attributes and events.</li>
+<li><code>vdom.el = element</code> stores the DOM reference.</li>
+<li>Recursively <code>mountDOM</code> for each child into this new element.</li>
+<li>Insert the final element into its parent.</li>
+</ol>
+<p>Props and events are handled here:</p>
+<pre><code class="language-js">function addProps(el, vdom, hostComponent) {
+  const { props: attrs, events } = extractPropsAndEvents(vdom)
+
+  vdom.listeners = addEventListeners(events, el, hostComponent)
+  setAttributes(el, attrs)
+}
+</code></pre>
+<ul>
+<li><code>extractPropsAndEvents</code> splits <code>vdom.props</code> into:
+<ul>
+<li><code>attrs</code> – normal attributes (<code>id</code>, <code>class</code>, <code>style</code>, etc.)</li>
+<li><code>events</code> – the <code>on: { click, input, ... }</code> object</li>
+</ul>
+</li>
+<li><code>addEventListeners</code> attaches real DOM listeners, binding them to <code>hostComponent</code> if provided (so <code>this</code> inside handlers is the component instance; see <a href="03_definecomponent_component.html">defineComponent / Component</a> and <code>events.js</code>).</li>
+<li><code>setAttributes</code> writes attributes and styles to the element.</li>
+</ul>
+<p>Like decorating a newly built room: paint walls, hang pictures, wire the doorbell.</p>
+<hr />
+<h3>2.3 Mounting fragments</h3>
+<p>Blueprint: a <code>FRAGMENT</code> VNode from <code>hFragment([...children...])</code>.</p>
+<p>Fragments are “multiple siblings, no wrapper.” They do <strong>not</strong> create a wrapper DOM node. Instead, <code>vdom.el</code> points to the <strong>parent element</strong> that holds all its children.</p>
+<pre><code class="language-js">function createFragmentNodes(vdom, parentEl, index, hostComponent) {
+  const { children } = vdom
+  vdom.el = parentEl
+
+  for (const child of children) {
+    mountDOM(child, parentEl, index, hostComponent)
+
+    if (index == null) {
+      continue
+    }
+
+    switch (child.type) {
+      case DOM_TYPES.FRAGMENT:
+        index += child.children.length
+        break
+      case DOM_TYPES.COMPONENT:
+        index += child.component.elements.length
+        break
+      default:
+        index++
+    }
+  }
+}
+</code></pre>
+<p>Details:</p>
+<ul>
+<li>It loops through each child and mounts it directly into <code>parentEl</code>.</li>
+<li>If <code>index</code> is provided, it carefully increments it so that:
+<ul>
+<li>A plain node advances index by 1.</li>
+<li>A nested fragment advances by its <strong>number of children</strong>.</li>
+<li>A component advances by its <strong>number of root DOM elements</strong> (via <code>component.elements</code> from <a href="03_definecomponent_component.html">defineComponent / Component</a>).</li>
+</ul>
+</li>
+</ul>
+<p>Analogy: a fragment is a stack of posters pinned individually to the same wall. The fragment itself <em>is</em> the wall reference (<code>vdom.el = parentEl</code>).</p>
+<hr />
+<h3>2.4 Mounting components</h3>
+<p>Blueprint: a <code>COMPONENT</code> VNode created by <code>h(MyComponent, props, children)</code>.</p>
+<p><code>mountDOM</code> calls:</p>
+<pre><code class="language-js">function createComponentNode(vdom, parentEl, index, hostComponent) {
+  const { tag: Component, children } = vdom
+  const { props, events } = extractPropsAndEvents(vdom)
+  const component = new Component(props, events, hostComponent)
+  component.setExternalContent(children)
+  component.setAppContext(hostComponent?.appContext ?? {})
+
+  component.mount(parentEl, index)
+  vdom.component = component
+  vdom.el = component.firstElement
+}
+</code></pre>
+<p>What this does:</p>
+<ol>
+<li><code>tag</code> is the <strong>Component class</strong> from <code>defineComponent</code>.</li>
+<li><code>extractPropsAndEvents</code> splits:
+<ul>
+<li><code>props</code> → passed into the component instance</li>
+<li><code>events</code> → handlers the <em>parent</em> wants to react to when the child calls <code>emit</code> (see <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>).</li>
+</ul>
+</li>
+<li><code>new Component(props, events, hostComponent)</code> creates an instance.</li>
+<li><code>setExternalContent(children)</code> stores children for slots.</li>
+<li><code>setAppContext</code> injects global context (router, etc. from <a href="10_createapp_application_context.html">createApp / Application context</a>).</li>
+<li><code>component.mount(parentEl, index)</code>:
+<ul>
+<li>Calls the component’s own <code>render()</code></li>
+<li>Uses <code>mountDOM</code> again on the returned VNode</li>
+</ul>
+</li>
+<li><code>vdom.component = component</code> stores the instance on the VNode.</li>
+<li><code>vdom.el = component.firstElement</code>:
+<ul>
+<li>For use by the diff algorithm when moving components around</li>
+<li>Even if the component has multiple root nodes (fragments), this is the first DOM element</li>
+</ul>
+</li>
+</ol>
+<p>Right after creating the component, <code>mountDOM</code> also queues its lifecycle hook:</p>
+<pre><code class="language-js">case DOM_TYPES.COMPONENT: {
+  createComponentNode(vdom, parentEl, index, hostComponent)
+  enqueueJob(() =&gt; vdom.component.onMounted())
+  break
+}
+</code></pre>
+<p><code>enqueueJob</code> (from <a href="09_scheduler_nexttick.html">Scheduler / nextTick</a>) ensures <code>onMounted</code> runs <strong>asynchronously</strong>, after mounting is complete.</p>
+<p>Analogy: creating a mini construction crew for a building inside your building. You just allocate them space and give them their blueprints; they handle their own rooms, furniture, and events.</p>
+<hr />
+<h3>2.5 Precise insertion with <code>insert</code></h3>
+<p>All the “create” helpers eventually call <code>insert</code>:</p>
+<pre><code class="language-js">function insert(el, parentEl, index) {
+  if (index == null) {
+    parentEl.append(el)
+    return
+  }
+
+  if (index &lt; 0) {
+    throw new Error(`Index must be a positive integer, got ${index}`)
+  }
+
+  const children = parentEl.childNodes
+
+  if (index &gt;= children.length) {
+    parentEl.append(el)
+  } else {
+    parentEl.insertBefore(el, children[index])
+  }
+}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>No index → append to the end.</li>
+<li>Index in range → insert before current child at that index.</li>
+<li>Index beyond end → append.</li>
+<li>Negative index → error.</li>
+</ul>
+<p>This is how the framework can:</p>
+<ul>
+<li>Mount children at exact positions</li>
+<li>Later, re-use positions when replacing nodes (as we’ll see in <code>patchDOM</code>)</li>
+</ul>
+<hr />
+<h2>3. destroyDOM: tearing things down safely</h2>
+<p>When a piece of UI disappears (component unmounted, route changed, item removed), the framework must:</p>
+<ul>
+<li>Remove DOM nodes</li>
+<li>Remove listeners</li>
+<li>Unmount child components and run their lifecycle hooks</li>
+</ul>
+<p>That’s what <code>destroyDOM</code> does.</p>
+<pre><code class="language-js">export function destroyDOM(vdom) {
+  const { type } = vdom
+
+  switch (type) {
+    case DOM_TYPES.TEXT: {
+      removeTextNode(vdom)
+      break
+    }
+
+    case DOM_TYPES.ELEMENT: {
+      removeElementNode(vdom)
+      break
+    }
+
+    case DOM_TYPES.FRAGMENT: {
+      removeFragmentNodes(vdom)
+      break
+    }
+
+    case DOM_TYPES.COMPONENT: {
+      vdom.component.unmount()
+      enqueueJob(() =&gt; vdom.component.onUnmounted())
+      break
+    }
+
+    default: {
+      throw new Error(`Can't destroy DOM of type: ${type}`)
+    }
+  }
+
+  delete vdom.el
+}
+</code></pre>
+<p>Same pattern: <strong>switch on <code>type</code></strong> and delegate.</p>
+<hr />
+<h3>3.1 Removing text nodes</h3>
+<pre><code class="language-js">function removeTextNode(vdom) {
+  const { el } = vdom
+
+  assert(el instanceof Text)
+
+  el.remove()
+}
+</code></pre>
+<p>It:</p>
+<ul>
+<li>Checks <code>el</code> really is a <code>Text</code></li>
+<li>Calls <code>el.remove()</code> to detach it from the DOM</li>
+</ul>
+<p>The VNode itself lives on (without <code>el</code>) only if the parent component or patch process still holds references.</p>
+<hr />
+<h3>3.2 Removing element nodes</h3>
+<pre><code class="language-js">function removeElementNode(vdom) {
+  const { el, children, listeners } = vdom
+
+  assert(el instanceof HTMLElement)
+
+  el.remove()
+  children.forEach(destroyDOM)
+
+  if (listeners) {
+    removeEventListeners(listeners, el)
+    delete vdom.listeners
+  }
+}
+</code></pre>
+<p>Steps:</p>
+<ol>
+<li>Remove the element from the DOM.</li>
+<li>Recursively <code>destroyDOM</code> each child VNode (their DOM is nested under this element).</li>
+<li>If there are stored DOM listeners (<code>vdom.listeners</code> from <code>mountDOM</code>), call <code>removeEventListeners</code> to detach them.</li>
+</ol>
+<p>Analogy: not just demolishing the house, but also cutting off electricity, water, and alarms.</p>
+<hr />
+<h3>3.3 Removing fragments</h3>
+<pre><code class="language-js">function removeFragmentNodes(vdom) {
+  const { children } = vdom
+  children.forEach(destroyDOM)
+}
+</code></pre>
+<p>No wrapper element to remove; just recursively destroy each child that this fragment had introduced into its parent.</p>
+<hr />
+<h3>3.4 Removing components</h3>
+<p>Destroying a component is a two-step dance:</p>
+<ol>
+<li>Let the component tear down its own internal DOM and subscriptions.</li>
+<li>Run its <code>onUnmounted</code> hook.</li>
+</ol>
+<pre><code class="language-js">case DOM_TYPES.COMPONENT: {
+  vdom.component.unmount()
+  enqueueJob(() =&gt; vdom.component.onUnmounted())
+  break
+}
+</code></pre>
+<p>From the component side (in <code>component.js</code>):</p>
+<pre><code class="language-js">unmount() {
+  if (!this.#isMounted) {
+    throw new Error('Component is not mounted')
+  }
+
+  destroyDOM(this.#vdom)
+  this.#subscriptions.forEach((unsubscribe) =&gt; unsubscribe())
+
+  this.#vdom = null
+  this.#isMounted = false
+  this.#hostEl = null
+  this.#subscriptions = []
+}
+</code></pre>
+<ul>
+<li>Calls <code>destroyDOM</code> on its internal VNode tree</li>
+<li>Unsubscribes from its event dispatcher subscriptions (the <code>emit</code> machinery from <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>)</li>
+<li>Clears VNode, flags, and references</li>
+</ul>
+<p>The <code>onUnmounted</code> lifecycle hook is queued via the scheduler, similar to <code>onMounted</code>.</p>
+<p>The net result: no lingering DOM, no dangling event handlers, no leaked component instances.</p>
+<hr />
+<h2>4. patchDOM: updating the DOM efficiently</h2>
+<p><code>mountDOM</code> is called only once per subtree: the <strong>first</strong> time something appears.</p>
+<p>When state or props change in a component, that component:</p>
+<ol>
+<li>Calls <code>render()</code> to get a new VNode tree.</li>
+<li>Calls <code>patchDOM(oldVdom, newVdom, parentEl, this)</code> to update the DOM in place.</li>
+</ol>
+<p><code>patchDOM</code> is the “remodeling” crew: change as little as possible, reuse as much as possible.</p>
+<p>Here is the core function:</p>
+<pre><code class="language-js">export function patchDOM(oldVdom, newVdom, parentEl, hostComponent = null) {
+  if (!areNodesEqual(oldVdom, newVdom)) {
+    const index = findIndexInParent(parentEl, oldVdom.el)
+    destroyDOM(oldVdom)
+    mountDOM(newVdom, parentEl, index, hostComponent)
+
+    return newVdom
+  }
+
+  newVdom.el = oldVdom.el
+
+  switch (newVdom.type) {
+    case DOM_TYPES.TEXT: {
+      patchText(oldVdom, newVdom)
+      return newVdom
+    }
+
+    case DOM_TYPES.ELEMENT: {
+      patchElement(oldVdom, newVdom, hostComponent)
+      break
+    }
+
+    case DOM_TYPES.COMPONENT: {
+      patchComponent(oldVdom, newVdom)
+      break
+    }
+  }
+
+  patchChildren(oldVdom, newVdom, hostComponent)
+
+  return newVdom
+}
+</code></pre>
+<p>Let’s break this down.</p>
+<hr />
+<h3>4.1 Step 1: are these nodes “the same kind”?</h3>
+<p>Before touching anything, <code>patchDOM</code> asks: <em>can I reuse this DOM node at all?</em></p>
+<pre><code class="language-js">if (!areNodesEqual(oldVdom, newVdom)) {
+  const index = findIndexInParent(parentEl, oldVdom.el)
+  destroyDOM(oldVdom)
+  mountDOM(newVdom, parentEl, index, hostComponent)
+
+  return newVdom
+}
+</code></pre>
+<p><code>areNodesEqual</code> (from <code>nodes-equal.js</code>) answers that:</p>
+<pre><code class="language-js">export function areNodesEqual(nodeOne, nodeTwo) {
+  if (nodeOne.type !== nodeTwo.type) {
+    return false
+  }
+
+  if (nodeOne.type === DOM_TYPES.ELEMENT) {
+    const {
+      tag: tagOne,
+      props: { key: keyOne },
+    } = nodeOne
+    const {
+      tag: tagTwo,
+      props: { key: keyTwo },
+    } = nodeTwo
+
+    return tagOne === tagTwo &amp;&amp; keyOne === keyTwo
+  }
+
+  if (nodeOne.type === DOM_TYPES.COMPONENT) {
+    const {
+      tag: componentOne,
+      props: { key: keyOne },
+    } = nodeOne
+    const {
+      tag: componentTwo,
+      props: { key: keyTwo },
+    } = nodeTwo
+
+    return componentOne === componentTwo &amp;&amp; keyOne === keyTwo
+  }
+
+  return true
+}
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Different <code>type</code> (element vs text vs component) → cannot reuse</li>
+<li><code>ELEMENT</code>:
+<ul>
+<li>Same <code>tag</code> and same <code>key</code> → can reuse</li>
+</ul>
+</li>
+<li><code>COMPONENT</code>:
+<ul>
+<li>Same component class and same <code>key</code> → can reuse</li>
+</ul>
+</li>
+<li>Others (text, fragment) → considered “compatible enough”</li>
+</ul>
+<p>If not equal:</p>
+<ul>
+<li>
+<p><code>findIndexInParent</code> figures out where the old DOM lived among its siblings:</p>
+<pre><code class="language-js">function findIndexInParent(parentEl, el) {
+  const index = Array.from(parentEl.childNodes).indexOf(el)
+  if (index &lt; 0) {
+    return null
+  }
+
+  return index
+}
+</code></pre>
+</li>
+<li>
+<p><code>destroyDOM(oldVdom)</code> removes the old DOM and components.</p>
+</li>
+<li>
+<p><code>mountDOM(newVdom, parentEl, index, hostComponent)</code> inserts a fresh subtree in exactly the same place.</p>
+</li>
+</ul>
+<p>Analogy: if you change “sink” to “bathtub” in a bathroom, you demolish the sink and install a new bathtub; you don’t try to reuse the sink pipes as a tub.</p>
+<hr />
+<h3>4.2 Step 2: reuse DOM node and patch in place</h3>
+<p>If <code>areNodesEqual</code> returns true, then the basic “shape” matches and we can reuse the existing DOM node:</p>
+<pre><code class="language-js">newVdom.el = oldVdom.el
+</code></pre>
+<p>We <strong>copy</strong> the DOM reference from old → new, instead of re-mounting.</p>
+<p>Then, depending on <code>newVdom.type</code>, we patch differently.</p>
+<hr />
+<h3>4.3 Patching text nodes</h3>
+<pre><code class="language-js">function patchText(oldVdom, newVdom) {
+  const el = oldVdom.el
+  const { value: oldText } = oldVdom
+  const { value: newText } = newVdom
+
+  if (oldText !== newText) {
+    el.nodeValue = newText
+  }
+}
+</code></pre>
+<ul>
+<li>If the text changed, update <code>nodeValue</code>.</li>
+<li>Otherwise, do nothing.</li>
+</ul>
+<hr />
+<h3>4.4 Patching element nodes</h3>
+<p>Element patching has two parts:</p>
+<ol>
+<li>Update the element itself (attributes, classes, styles, events).</li>
+<li>Update its children.</li>
+</ol>
+<p>The first part happens in <code>patchElement</code>:</p>
+<pre><code class="language-js">function patchElement(oldVdom, newVdom, hostComponent) {
+  const el = oldVdom.el
+  const {
+    class: oldClass,
+    style: oldStyle,
+    on: oldEvents,
+    ...oldAttrs
+  } = oldVdom.props
+  const {
+    class: newClass,
+    style: newStyle,
+    on: newEvents,
+    ...newAttrs
+  } = newVdom.props
+  const { listeners: oldListeners } = oldVdom
+
+  patchAttrs(el, oldAttrs, newAttrs)
+  patchClasses(el, oldClass, newClass)
+  patchStyles(el, oldStyle, newStyle)
+  newVdom.listeners = patchEvents(
+    el,
+    oldListeners,
+    oldEvents,
+    newEvents,
+    hostComponent
+  )
+}
+</code></pre>
+<h4>4.4.1 Attributes</h4>
+<pre><code class="language-js">function patchAttrs(el, oldAttrs, newAttrs) {
+  const { added, removed, updated } = objectsDiff(oldAttrs, newAttrs)
+
+  for (const attr of removed) {
+    removeAttribute(el, attr)
+  }
+
+  for (const attr of added.concat(updated)) {
+    setAttribute(el, attr, newAttrs[attr])
+  }
+}
+</code></pre>
+<ul>
+<li><code>objectsDiff</code> figures out which attribute keys:
+<ul>
+<li>Were removed</li>
+<li>Were added</li>
+<li>Stayed but changed value</li>
+</ul>
+</li>
+<li>Then:
+<ul>
+<li>Remove old-only attributes</li>
+<li>Set values for added or updated ones</li>
+</ul>
+</li>
+</ul>
+<p>This means your DOM attributes reflect current props exactly.</p>
+<h4>4.4.2 Classes</h4>
+<pre><code class="language-js">function patchClasses(el, oldClass, newClass) {
+  const oldClasses = toClassList(oldClass)
+  const newClasses = toClassList(newClass)
+
+  const { added, removed } = arraysDiff(oldClasses, newClasses)
+
+  if (removed.length &gt; 0) {
+    el.classList.remove(...removed)
+  }
+  if (added.length &gt; 0) {
+    el.classList.add(...added)
+  }
+}
+</code></pre>
+<ul>
+<li><code>toClassList</code> normalizes string or array class props into arrays of class names.</li>
+<li><code>arraysDiff</code> computes which classes were added or removed, even with duplicates.</li>
+<li><code>classList.remove</code> and <code>classList.add</code> handle the actual DOM change.</li>
+</ul>
+<h4>4.4.3 Styles</h4>
+<pre><code class="language-js">function patchStyles(el, oldStyle = {}, newStyle = {}) {
+  const { added, removed, updated } = objectsDiff(oldStyle, newStyle)
+
+  for (const style of removed) {
+    removeStyle(el, style)
+  }
+
+  for (const style of added.concat(updated)) {
+    setStyle(el, style, newStyle[style])
+  }
+}
+</code></pre>
+<p>This mirrors <code>patchAttrs</code>, but inside <code>style</code>:</p>
+<ul>
+<li>Remove styles that no longer exist</li>
+<li>Set new or changed styles</li>
+</ul>
+<h4>4.4.4 Events</h4>
+<pre><code class="language-js">function patchEvents(
+  el,
+  oldListeners = {},
+  oldEvents = {},
+  newEvents = {},
+  hostComponent
+) {
+  const { removed, added, updated } = objectsDiff(oldEvents, newEvents)
+  const listeners = { ...oldListeners }
+
+  for (const eventName of removed.concat(updated)) {
+    el.removeEventListener(eventName, oldListeners[eventName])
+    delete listeners[eventName]
+  }
+
+  for (const eventName of added.concat(updated)) {
+    const listener = addEventListener(
+      eventName,
+      newEvents[eventName],
+      el,
+      hostComponent
+    )
+    listeners[eventName] = listener
+  }
+
+  return listeners
+}
+</code></pre>
+<ul>
+<li>Events to remove or update:
+<ul>
+<li>Call <code>removeEventListener</code> with the <strong>previous bound handler</strong> (<code>oldListeners[eventName]</code>).</li>
+</ul>
+</li>
+<li>Events to add or update:
+<ul>
+<li>Call <code>addEventListener</code> again, possibly rebinding to a new callback</li>
+<li>Store new bound handler into <code>listeners</code></li>
+</ul>
+</li>
+</ul>
+<p>Finally, <code>newVdom.listeners</code> is set so any future patch or destroy can remove them correctly.</p>
+<p>Analogy: carefully update a room’s fixtures: change the bulbs, rewire switches, repaint walls, but keep the room itself intact.</p>
+<hr />
+<h3>4.5 Patching component nodes</h3>
+<p>Patching a component VNode is not about touching DOM directly. Instead, we delegate to the component instance, which knows how to re-render itself:</p>
+<pre><code class="language-js">function patchComponent(oldVdom, newVdom) {
+  const { component } = oldVdom
+  const { children } = newVdom
+  const { props } = extractPropsAndEvents(newVdom)
+
+  component.setExternalContent(children)
+  component.updateProps(props)
+
+  newVdom.component = component
+  newVdom.el = component.firstElement
+}
+</code></pre>
+<ul>
+<li>Reuse the same <code>component</code> instance (we know it’s the same type + key from <code>areNodesEqual</code>).</li>
+<li>Update:
+<ul>
+<li>Its external slot content</li>
+<li>Its <code>props</code> via <code>updateProps</code>, which triggers the component’s internal render + <code>patchDOM</code> of its subtree</li>
+</ul>
+</li>
+<li>Point <code>newVdom.component</code> and <code>newVdom.el</code> to the same instance and its first DOM element.</li>
+</ul>
+<p>This is how the parent can change props while each component remains a stable island of state and DOM logic (as described in <a href="03_definecomponent_component.html">defineComponent / Component</a>).</p>
+<hr />
+<h3>4.6 Patching children arrays</h3>
+<p>After patching an element or component itself, the next question is: <strong>what about its children?</strong></p>
+<p>This is especially tricky when:</p>
+<ul>
+<li>Children are rearranged</li>
+<li>Fragments are involved</li>
+<li>Some children are components (which are multi-element islands)</li>
+</ul>
+<p><code>patchChildren</code> handles this:</p>
+<pre><code class="language-js">function patchChildren(oldVdom, newVdom, hostComponent) {
+  const oldChildren = extractChildren(oldVdom)
+  const newChildren = extractChildren(newVdom)
+  const parentEl = oldVdom.el
+
+  const diffSeq = arraysDiffSequence(
+    oldChildren,
+    newChildren,
+    areNodesEqual
+  )
+
+  for (const operation of diffSeq) {
+    const { originalIndex, index, item } = operation
+    const offset = computeChildrenOffset(oldVdom, hostComponent)
+
+    switch (operation.op) {
+      case ARRAY_DIFF_OP.ADD: {
+        mountDOM(item, parentEl, index + offset, hostComponent)
+        break
+      }
+
+      case ARRAY_DIFF_OP.REMOVE: {
+        destroyDOM(item)
+        break
+      }
+
+      case ARRAY_DIFF_OP.MOVE: {
+        const oldChild = oldChildren[originalIndex]
+        const newChild = newChildren[index]
+        const elAtTargetIndex = parentEl.childNodes[index + offset]
+
+        const elementsToMove = isComponent(oldChild)
+          ? oldChild.component.elements
+          : [oldChild.el]
+
+        elementsToMove.forEach((el) =&gt; {
+          parentEl.insertBefore(el, elAtTargetIndex)
+          patchDOM(oldChild, newChild, parentEl, hostComponent)
+        })
+
+        break
+      }
+
+      case ARRAY_DIFF_OP.NOOP: {
+        patchDOM(
+          oldChildren[originalIndex],
+          newChildren[index],
+          parentEl,
+          hostComponent
+        )
+        break
+      }
+    }
+  }
+}
+</code></pre>
+<p>Important pieces:</p>
+<h4>4.6.1 Flattening fragments</h4>
+<p><code>extractChildren</code> (from <code>h.js</code>) returns a flat list of children, replacing fragment nodes with their children:</p>
+<pre><code class="language-js">export function extractChildren(vdom) {
+  if (vdom.children == null) {
+    return []
+  }
+
+  const children = []
+
+  for (const child of vdom.children) {
+    if (child.type === DOM_TYPES.FRAGMENT) {
+      children.push(...extractChildren(child))
+    } else {
+      children.push(child)
+    }
+  }
+
+  return children
+}
+</code></pre>
+<p>Why? Fragments don’t get their own DOM wrapper; their children become real siblings in the DOM. To match that, we diff <strong>flat</strong> children lists.</p>
+<h4>4.6.2 Computing add / remove / move / noop</h4>
+<p><code>arraysDiffSequence</code> (from <code>utils/arrays.js</code>) compares:</p>
+<ul>
+<li><code>oldChildren</code></li>
+<li><code>newChildren</code></li>
+<li>Using <code>areNodesEqual</code> to decide if two children are the “same kind”</li>
+</ul>
+<p>It returns a sequence of operations:</p>
+<ul>
+<li><code>ADD</code> – mount a new VNode at some index</li>
+<li><code>REMOVE</code> – remove a VNode that no longer exists</li>
+<li><code>MOVE</code> – same node (type + key) moved to a different index</li>
+<li><code>NOOP</code> – existing node reused, just patch contents</li>
+</ul>
+<p>This is like a choreographed plan: “add, move, move, noop, remove” that, if applied in order, transforms the old children list into the new one.</p>
+<h4>4.6.3 Host component offset</h4>
+<p>When children belong to a component, the indices used in the VNode arrays might not start at 0 in the actual DOM. The component might be offset inside its parent.</p>
+<p><code>computeChildrenOffset</code> adjusts for that:</p>
+<pre><code class="language-js">function computeChildrenOffset(oldVdom, hostComponent = null) {
+  if (hostComponent == null) {
+    return 0
+  }
+
+  if (oldVdom.el === hostComponent.hostEl) {
+    return hostComponent.offset
+  }
+
+  return 0
+}
+</code></pre>
+<ul>
+<li>If we’re patching the top-level children of a component’s root, <code>hostComponent.offset</code> gives the index of that component’s first element in the parent.</li>
+<li>We add this offset when we:
+<ul>
+<li><code>ADD</code> – mount at <code>index + offset</code></li>
+<li><code>MOVE</code> – find <code>elAtTargetIndex</code> at <code>index + offset</code></li>
+</ul>
+</li>
+</ul>
+<p>Without this, components with fragment roots would be moved or inserted at the wrong positions in the parent DOM.</p>
+<h4>4.6.4 Handling MOVE with components</h4>
+<p>The <code>MOVE</code> case is subtle:</p>
+<pre><code class="language-js">case ARRAY_DIFF_OP.MOVE: {
+  const oldChild = oldChildren[originalIndex]
+  const newChild = newChildren[index]
+  const elAtTargetIndex = parentEl.childNodes[index + offset]
+
+  const elementsToMove = isComponent(oldChild)
+    ? oldChild.component.elements
+    : [oldChild.el]
+
+  elementsToMove.forEach((el) =&gt; {
+    parentEl.insertBefore(el, elAtTargetIndex)
+    patchDOM(oldChild, newChild, parentEl, hostComponent)
+  })
+
+  break
+}
+</code></pre>
+<p>If the moved child is:</p>
+<ul>
+<li>A plain element or text node → just one <code>el</code> to move.</li>
+<li>A component → could be several root DOM elements (if it uses a fragment). We must move <em>all</em> of them, keeping their internal order.</li>
+</ul>
+<p>Then, after moving, we call <code>patchDOM(oldChild, newChild, parentEl, hostComponent)</code> to patch its internals, in case something else changed besides its position.</p>
+<p>Analogy: if you move a whole bookshelf (component with fragment root) from one wall to another, you move the <em>entire</em> shelf with all books, not just the first book.</p>
+<hr />
+<h2>5. How mounting, patching, and destroying interact</h2>
+<p>To see the dance between these three functions, let’s look at a typical component lifecycle: mounted once, updated twice, then destroyed.</p>
+<p>We’ll include:</p>
+<ul>
+<li><code>Comp</code> – the component instance</li>
+<li><code>Render</code> – the component’s <code>render</code> method</li>
+<li><code>Mount</code> – the <code>mountDOM</code> logic</li>
+<li><code>Patch</code> – the <code>patchDOM</code> logic</li>
+<li><code>Destroy</code> – the <code>destroyDOM</code> logic</li>
+</ul>
+<pre class="mermaid">sequenceDiagram
+  participant Comp as Component
+  participant Render as Render
+  participant Mount as MountDOM
+  participant Patch as PatchDOM
+  participant Destroy as DestroyDOM
+
+  Comp->>Render: Build initial virtual tree
+  Render-->>Comp: Return initial virtual tree
+  Comp->>Mount: Mount initial tree into host
+  Comp->>Render: Build updated virtual tree after state change
+  Render-->>Comp: Return updated virtual tree
+  Comp->>Patch: Patch old tree with new tree
+  Comp->>Destroy: Destroy current tree on unmount
+</pre>
+<p>Tie this back to previous chapters:</p>
+<ul>
+<li>The tree <code>Render</code> builds is made of VNodes and <code>DOM_TYPES</code> from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a>.</li>
+<li><code>MountDOM</code>, <code>PatchDOM</code>, <code>DestroyDOM</code> use those <code>type</code> labels and shapes created by <code>h</code> / <code>hFragment</code> / <code>hSlot</code> from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a>.</li>
+<li>The <code>Comp</code> participant is an instance created via <a href="03_definecomponent_component.html">defineComponent / Component</a>.</li>
+</ul>
+<hr />
+<h2>6. How this is used at the app level</h2>
+<p>Finally, how does this all connect to the top of the app?</p>
+<p>In <code>createApp</code> (from <a href="10_createapp_application_context.html">createApp / Application context</a>):</p>
+<pre><code class="language-js">export function createApp(RootComponent, props = {}, options = {}) {
+  let parentEl = null
+  let isMounted = false
+  let vdom = null
+
+  const context = {
+    router: options.router || new NoopRouter(),
+  }
+
+  function reset() {
+    parentEl = null
+    isMounted = false
+    vdom = null
+  }
+
+  return {
+    mount(_parentEl) {
+      if (isMounted) {
+        throw new Error('The application is already mounted')
+      }
+
+      parentEl = _parentEl
+      vdom = h(RootComponent, props)
+      mountDOM(vdom, parentEl, null, { appContext: context })
+
+      context.router.init()
+
+      isMounted = true
+    },
+
+    unmount() {
+      if (!isMounted) {
+        throw new Error('The application is not mounted')
+      }
+
+      destroyDOM(vdom)
+      context.router.destroy()
+      reset()
+    },
+  }
+}
+</code></pre>
+<ul>
+<li>On <code>mount</code>:
+<ul>
+<li>Create a root VNode: <code>h(RootComponent, props)</code></li>
+<li>Call <code>mountDOM</code> with a special “host component” object that only carries <code>appContext</code></li>
+<li>Initialize the router</li>
+</ul>
+</li>
+<li>On <code>unmount</code>:
+<ul>
+<li>Call <code>destroyDOM</code> on the entire root VNode</li>
+<li>Tear down the router</li>
+</ul>
+</li>
+</ul>
+<p>Everything in between (state updates, route changes, event handlers) eventually leads to <code>patchDOM</code> or <code>destroyDOM</code> operations down the tree.</p>
+<hr />
+<h2>7. Recap</h2>
+<p>You’ve now met the three low-level workers of this framework:</p>
+<ul>
+<li>
+<p><strong><code>mountDOM</code></strong> – walks a VNode tree and:</p>
+<ul>
+<li>Creates text, element, fragment, and component DOM</li>
+<li>Stores references on VNodes (<code>el</code>, <code>component</code>, <code>listeners</code>)</li>
+<li>Inserts at precise indices in the parent</li>
+<li>Schedules <code>onMounted</code> for components</li>
+</ul>
+</li>
+<li>
+<p><strong><code>patchDOM</code></strong> – given an old and new VNode:</p>
+<ul>
+<li>Uses <code>areNodesEqual</code> to decide whether to reuse or fully replace</li>
+<li>Updates:
+<ul>
+<li>Text node content</li>
+<li>Element attributes, classes, styles, events</li>
+<li>Component props and slot content</li>
+</ul>
+</li>
+<li>Diffs children arrays (with fragments and components), doing add / remove / move / noop with minimal DOM operations</li>
+</ul>
+</li>
+<li>
+<p><strong><code>destroyDOM</code></strong> – walks a VNode tree and:</p>
+<ul>
+<li>Removes DOM nodes</li>
+<li>Cleans up listeners</li>
+<li>Unmounts components and schedules <code>onUnmounted</code></li>
+</ul>
+</li>
+</ul>
+<p>They live underneath the abstractions you’ve already seen:</p>
+<ul>
+<li>VNode shapes and <code>DOM_TYPES</code> from <a href="01_vnode_dom_types.html">VNode / DOM_TYPES</a></li>
+<li>VNode creation helpers from <a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot</a></li>
+<li>Component instances from <a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+</ul>
+<p>They’re the reason you can write:</p>
+<pre><code class="language-js">this.updateState({ count: this.state.count + 1 })
+</code></pre>
+<p>and never think about <code>createElement</code>, <code>appendChild</code>, or <code>removeEventListener</code> again.</p>
+<hr />
+<p>Now that your construction crew is in place, there’s one more big question: <strong>how do components talk to each other without tight coupling?</strong></p>
+<p>You saw a hint in <code>patchComponent</code>, where parents pass “event handlers” to children. In the next chapter, <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>, we’ll see how a tiny event bus lets components emit events upward in a clean, decoupled way—like a restaurant kitchen bell that any chef can ring and the head chef can respond to.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="03_definecomponent_component.html">&larr; defineComponent / Component</a></span>
+    <span><a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit) &rarr;</a></span>
+  </nav>
+</body>
+</html>

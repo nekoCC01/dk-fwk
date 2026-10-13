@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VNode / DOM_TYPES — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 1: VNode / DOM_TYPES</h1>
+<p>Imagine you are building a UI library from scratch.</p>
+<p>You call <code>document.createElement('div')</code>, wire some events, then a user clicks a button, state changes, and now half your elements need to move, some need to disappear, and others need to appear in the middle.</p>
+<p>If you try to do this <strong>directly on the DOM</strong>, it quickly feels like trying to rebuild a house while people are still living in it. You must:</p>
+<ul>
+<li>Remember which element corresponds to which piece of data</li>
+<li>Decide which elements to reuse vs. throw away</li>
+<li>Avoid doing unnecessary DOM work so the page stays fast</li>
+</ul>
+<p>You need <strong>a plan</strong> before you touch real DOM nodes.</p>
+<p>That plan is your <strong>virtual DOM</strong>. And the units in that plan are <strong>virtual nodes</strong> — VNodes — plus a small set of labels that say <em>what kind</em> of thing each node represents. Those labels are <code>DOM_TYPES</code>.</p>
+<p>In this chapter, we’ll look at:</p>
+<ul>
+<li>What a VNode is, conceptually</li>
+<li>How <code>DOM_TYPES</code> categorize every node in the tree</li>
+<li>How other parts of the framework use VNodes and <code>DOM_TYPES</code> to mount, update, and remove things from the page</li>
+<li>How your code will create VNodes using helper functions from the next chapter: <a href="02_h_hstring_hfragment_hslot.html"><code>h / hString / hFragment / hSlot</code></a></li>
+</ul>
+<hr />
+<h2>1. The blueprint, not the building</h2>
+<p>Think of your UI as a house:</p>
+<ul>
+<li>The <strong>actual DOM</strong> is the <em>physical house</em>: bricks, windows, doors.</li>
+<li>A <strong>VNode</strong> is a <em>blueprint</em>: what rooms should exist, how they connect, which furniture goes where.</li>
+</ul>
+<p>You don’t start by moving bricks; you start by drawing a plan:</p>
+<pre><code class="language-js">// This is NOT DOM. It's just JS data describing DOM.
+const view = {
+  type: 'element',
+  tag: 'button',
+  props: { id: 'save-btn' },
+  children: [
+    { type: 'text', value: 'Save' },
+  ],
+}
+</code></pre>
+<p>That object is a <strong>VNode</strong>:</p>
+<ul>
+<li>It says: “There should be a <code>&lt;button id=&quot;save-btn&quot;&gt;Save&lt;/button&gt;</code> here.”</li>
+<li>It doesn’t say <em>how</em> to create it.</li>
+<li>It doesn’t hold a real DOM reference yet.</li>
+</ul>
+<p>Later, code like <a href="04_mountdom_destroydom_patchdom.html"><code>mountDOM</code></a> reads this object and actually does <code>document.createElement('button')</code>, sets <code>id</code>, appends a text node, and so on.</p>
+<p>This separation gives us a huge advantage:</p>
+<ul>
+<li>We can compare the <strong>old blueprint</strong> and the <strong>new blueprint</strong> (VNodes)</li>
+<li>Then we compute a minimal set of changes</li>
+<li>Only then do we touch the real DOM</li>
+</ul>
+<hr />
+<h2>2. The <code>DOM_TYPES</code> catalog: naming the kinds of nodes</h2>
+<p>The framework needs to know <strong>what kind</strong> of VNode it’s dealing with at any moment:</p>
+<ul>
+<li>Text node?</li>
+<li>Regular HTML element?</li>
+<li>A component (user-defined, with state and lifecycle)?</li>
+<li>A fragment (a wrapper for multiple children)?</li>
+<li>A slot (placeholder for external content)?</li>
+</ul>
+<p>To avoid guessing, we give every VNode a <code>type</code> from a small, fixed set: <code>DOM_TYPES</code>.</p>
+<p>Here is the definition from <code>h.js</code>:</p>
+<pre><code class="language-js">export const DOM_TYPES = {
+  TEXT: 'text',
+  ELEMENT: 'element',
+  FRAGMENT: 'fragment',
+  COMPONENT: 'component',
+  SLOT: 'slot',
+}
+</code></pre>
+<p>This tiny object is used <strong>everywhere</strong> in the framework:</p>
+<ul>
+<li><a href="04_mountdom_destroydom_patchdom.html"><code>mountDOM</code></a> uses it to decide <em>how</em> to build DOM from a VNode.</li>
+<li><a href="04_mountdom_destroydom_patchdom.html"><code>patchDOM</code></a> uses it to decide <em>how to compare</em> and update nodes.</li>
+<li><a href="04_mountdom_destroydom_patchdom.html"><code>destroyDOM</code></a> uses it to decide <em>how to unmount</em> nodes.</li>
+<li><a href="06_slots_and_fillslots.html"><code>fillSlots</code></a> uses it to <em>find slot placeholders</em>.</li>
+</ul>
+<p>Think of <code>DOM_TYPES</code> like labels in a warehouse: <strong>“Fragile”, “Perishable”, “Liquid”</strong>. The label doesn’t store the object; it tells the system <em>how to treat</em> the object.</p>
+<hr />
+<h2>3. What exactly is a VNode?</h2>
+<p>In this framework, a VNode is always a plain JavaScript object with a <code>type</code> from <code>DOM_TYPES</code>. Depending on the type, different fields appear.</p>
+<h3>3.1 Text nodes (<code>DOM_TYPES.TEXT</code>)</h3>
+<p><strong>What it represents</strong></p>
+<p>A text node in the DOM, like the “Hello” in:</p>
+<pre><code class="language-html">&lt;p&gt;Hello&lt;/p&gt;
+</code></pre>
+<p><strong>Shape</strong></p>
+<pre><code class="language-js">// created by hString(&quot;Hello&quot;)
+const textNode = {
+  type: DOM_TYPES.TEXT,
+  value: 'Hello',
+  // el: Text node in the real DOM (added later by mountDOM)
+}
+</code></pre>
+<ul>
+<li><code>type</code> — always <code>'text'</code></li>
+<li><code>value</code> — the string content</li>
+<li><code>el</code> — reference to <code>document.createTextNode(...)</code> after mounting</li>
+</ul>
+<p>Text nodes are leaf nodes: they don’t have <code>children</code>.</p>
+<h3>3.2 Element nodes (<code>DOM_TYPES.ELEMENT</code>)</h3>
+<p><strong>What it represents</strong></p>
+<p>A regular HTML element:</p>
+<pre><code class="language-html">&lt;button class=&quot;primary&quot; disabled&gt;Save&lt;/button&gt;
+</code></pre>
+<p><strong>Shape</strong></p>
+<pre><code class="language-js">// created by h('button', { class: 'primary', disabled: true }, [hString('Save')])
+const buttonNode = {
+  type: DOM_TYPES.ELEMENT,
+  tag: 'button',
+  props: {
+    class: 'primary',
+    disabled: true,
+    // plus special keys: on, style, etc.
+  },
+  children: [
+    { type: DOM_TYPES.TEXT, value: 'Save' },
+  ],
+  // el: real &lt;button&gt; element in DOM (added later)
+  // listeners: event listeners attached to this element (added later)
+}
+</code></pre>
+<p>Key fields:</p>
+<ul>
+<li><code>tag</code> — <code>'button'</code>, <code>'div'</code>, etc.</li>
+<li><code>props</code> — attributes, classes, styles, and special props like <code>on</code> for events</li>
+<li><code>children</code> — child VNodes (elements, text, components, fragments…)</li>
+<li><code>el</code> — reference to the real DOM element (set by <code>mountDOM</code>)</li>
+<li><code>listeners</code> — stored event listeners so they can be removed on unmount</li>
+</ul>
+<h3>3.3 Component nodes (<code>DOM_TYPES.COMPONENT</code>)</h3>
+<p><strong>What it represents</strong></p>
+<p>A <strong>component instance</strong>, not a bare HTML tag. For example, something defined with <a href="03_definecomponent_component.html"><code>defineComponent / Component</code></a>:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+
+const Counter = defineComponent({
+  state() {
+    return { count: 0 }
+  },
+  render() {
+    // ...
+  },
+})
+</code></pre>
+<p>When you create a VNode with <code>h(Counter, { initial: 5 })</code>, you get:</p>
+<pre><code class="language-js">const counterNode = {
+  type: DOM_TYPES.COMPONENT,
+  tag: Counter,          // the component class / constructor
+  props: { initial: 5 }, // props to pass
+  children: [],          // external content for slots
+  // component: actual Component instance (created by mountDOM)
+  // el: first DOM element from the component (for positioning)
+}
+</code></pre>
+<p>Key points:</p>
+<ul>
+<li><code>tag</code> is <strong>not</strong> a string; it’s a constructor or class (a component).</li>
+<li>A <code>component</code> field will be attached later: an actual instance with <code>mount</code>, <code>unmount</code>, <code>updateProps</code>, and so on, as defined in <code>component.js</code>.</li>
+<li><code>children</code> here are the “slot content” passed into that component, used later by slots (see <a href="06_slots_and_fillslots.html"><code>Slots and fillSlots</code></a>).</li>
+</ul>
+<p>The framework uses <code>DOM_TYPES.COMPONENT</code> to route this node to special logic: it must create a component instance, not an HTML element.</p>
+<h3>3.4 Fragment nodes (<code>DOM_TYPES.FRAGMENT</code>)</h3>
+<p><strong>What it represents</strong></p>
+<p>A <strong>group of sibling nodes with no wrapper element</strong>, like React’s <code>&lt;&gt;...&lt;/&gt;</code>.</p>
+<p>Example in real DOM terms:</p>
+<pre><code class="language-html">&lt;!-- imagine these three are &quot;top-level&quot; siblings of a component --&gt;
+&lt;h1&gt;Title&lt;/h1&gt;
+&lt;p&gt;Intro&lt;/p&gt;
+&lt;button&gt;Click&lt;/button&gt;
+</code></pre>
+<p>If we don’t want to wrap them in a <code>div</code> (to avoid breaking layout or CSS), we use a fragment VNode:</p>
+<pre><code class="language-js">// created by hFragment([...])
+const fragmentNode = {
+  type: DOM_TYPES.FRAGMENT,
+  children: [
+    /* VNode for &lt;h1&gt; */,
+    /* VNode for &lt;p&gt; */,
+    /* VNode for &lt;button&gt; */,
+  ],
+  // el: parent DOM element that holds these children (set later)
+}
+</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>el</code> is typically the <strong>parent DOM element</strong> that all its children live in.</li>
+<li>Fragments are important for the diffing algorithm (<code>patchDOM</code>) and for component positioning.</li>
+</ul>
+<p>You’ll see fragments used heavily in components whose render function returns <strong>multiple root elements</strong>.</p>
+<h3>3.5 Slot nodes (<code>DOM_TYPES.SLOT</code>)</h3>
+<p><strong>What it represents</strong></p>
+<p>A <strong>placeholder for external content</strong> inside a component, similar to <code>&lt;slot&gt;</code> in Web Components.</p>
+<p>Imagine a <code>Modal</code> component where the caller decides what goes inside:</p>
+<pre><code class="language-js">// usage, simplified
+h(Modal, null, [
+  h('p', null, [hString('This is the body')]),
+])
+</code></pre>
+<p>Inside <code>Modal</code>’s render, you’d see something like:</p>
+<pre><code class="language-js">// created by hSlot()
+const slotNode = {
+  type: DOM_TYPES.SLOT,
+  children: [], // default content if caller provides nothing
+}
+</code></pre>
+<p>Later, <code>fillSlots</code> (see <a href="06_slots_and_fillslots.html"><code>Slots and fillSlots</code></a>) will:</p>
+<ul>
+<li>Find nodes of <code>type: DOM_TYPES.SLOT</code></li>
+<li>Replace them <strong>in-place</strong> with fragments that contain the caller’s VNodes</li>
+</ul>
+<p>Slots are not meant to be mounted directly into the DOM. If <code>mountDOM</code> encounters a <code>SLOT</code> node, that’s a bug.</p>
+<hr />
+<h2>4. How VNodes are actually used</h2>
+<p>So far, we’ve described structure. Let’s connect it to behavior.</p>
+<h3>4.1 From VNode to DOM: mounting</h3>
+<p>The function <code>mountDOM</code> is the bridge from <strong>blueprint</strong> (VNode) to <strong>building</strong> (real DOM):</p>
+<pre><code class="language-js">export function mountDOM(vdom, parentEl, index, hostComponent = null) {
+  if (parentEl == null) {
+    throw new Error('[mountDOM] Parent element is null')
+  }
+
+  switch (vdom.type) {
+    case DOM_TYPES.TEXT: {
+      createTextNode(vdom, parentEl, index)
+      break
+    }
+    // other cases...
+  }
+}
+</code></pre>
+<p>We’ll walk more deeply through <code>mountDOM</code> in the <code>mountDOM / destroyDOM / patchDOM</code> chapter, but notice:</p>
+<ul>
+<li>The <strong>first thing</strong> it does is switch on <code>vdom.type</code>.</li>
+<li>That <code>type</code> came from <code>DOM_TYPES</code>.</li>
+</ul>
+<p>Like a factory line where boxes are sorted: <strong>“If it’s fragile, send it here; if it’s perishable, send it there.”</strong></p>
+<p>Each case creates and wires things differently:</p>
+<ul>
+<li><code>TEXT</code> → <code>document.createTextNode</code>, set <code>vdom.el</code></li>
+<li><code>ELEMENT</code> → <code>document.createElement</code>, apply props, mount children</li>
+<li><code>FRAGMENT</code> → mount all children in the same parent</li>
+<li><code>COMPONENT</code> → create <code>new Component(...)</code>, call <code>component.mount(...)</code></li>
+</ul>
+<p>We’ll see <code>SLOT</code> stays out of this; slots are handled before mounting by the component logic (<code>fillSlots</code>).</p>
+<h3>4.2 Updating DOM with VNodes: patching</h3>
+<p>When state changes inside a component (see <a href="03_definecomponent_component.html"><code>defineComponent / Component</code></a>), we don’t rebuild the entire DOM. We:</p>
+<ol>
+<li>Re-render the component to get a <strong>new VNode tree</strong></li>
+<li>Compare it to the <strong>old VNode tree</strong></li>
+<li>Apply differences to the real DOM using <code>patchDOM</code></li>
+</ol>
+<p><code>patchDOM</code> again starts with <code>type</code>:</p>
+<pre><code class="language-js">export function patchDOM(oldVdom, newVdom, parentEl, hostComponent = null) {
+  if (!areNodesEqual(oldVdom, newVdom)) {
+    // if they are too different, just replace
+  }
+
+  newVdom.el = oldVdom.el
+
+  switch (newVdom.type) {
+    case DOM_TYPES.TEXT: {
+      patchText(oldVdom, newVdom)
+      return newVdom
+    }
+
+    case DOM_TYPES.ELEMENT: {
+      patchElement(oldVdom, newVdom, hostComponent)
+      break
+    }
+
+    case DOM_TYPES.COMPONENT: {
+      patchComponent(oldVdom, newVdom)
+      break
+    }
+  }
+
+  patchChildren(oldVdom, newVdom, hostComponent)
+
+  return newVdom
+}
+</code></pre>
+<p>Simplified flow:</p>
+<ul>
+<li>If nodes are “the same kind” (<code>areNodesEqual</code>), keep the same DOM element and patch <strong>in place</strong></li>
+<li>If not, remove old DOM, mount new DOM in its place</li>
+<li>Use <code>type</code> to decide <em>how</em> to patch: text vs element vs component</li>
+<li>After patching the node itself, patch its children (where <code>FRAGMENT</code> comes into play)</li>
+</ul>
+<p>Again, VNodes and their types drive the whole operation.</p>
+<h3>4.3 Cleaning up: destroying</h3>
+<p>When something is removed from the page, we need to:</p>
+<ul>
+<li>Remove its DOM nodes</li>
+<li>Remove its event listeners</li>
+<li>Let components run their <code>onUnmounted</code> hooks</li>
+</ul>
+<p><code>destroyDOM</code> uses <code>DOM_TYPES</code> to do this correctly:</p>
+<pre><code class="language-js">export function destroyDOM(vdom) {
+  const { type } = vdom
+
+  switch (type) {
+    case DOM_TYPES.TEXT: {
+      removeTextNode(vdom)
+      break
+    }
+
+    case DOM_TYPES.ELEMENT: {
+      removeElementNode(vdom)
+      break
+    }
+
+    case DOM_TYPES.FRAGMENT: {
+      removeFragmentNodes(vdom)
+      break
+    }
+
+    case DOM_TYPES.COMPONENT: {
+      vdom.component.unmount()
+      enqueueJob(() =&gt; vdom.component.onUnmounted())
+      break
+    }
+
+    default: {
+      throw new Error(`Can't destroy DOM of type: ${type}`)
+    }
+  }
+
+  delete vdom.el
+}
+</code></pre>
+<p>Notice again: the <strong>type</strong> determines which cleanup logic runs.</p>
+<hr />
+<h2>5. Walking the VNode tree</h2>
+<p>Sometimes we want to <strong>traverse</strong> the entire VNode tree and inspect or modify nodes. For example, to implement slots, <code>fillSlots</code> walks the tree and replaces <code>SLOT</code> nodes with fragments.</p>
+<p>Traversal is done with <code>traverseDFS</code>:</p>
+<pre><code class="language-js">export function traverseDFS(
+  vdom,
+  processNode,
+  shouldSkipBranch = () =&gt; false,
+  parentNode = null,
+  index = null
+) {
+  if (shouldSkipBranch(vdom)) return
+
+  processNode(vdom, parentNode, index)
+
+  if (vdom.children) {
+    vdom.children.forEach((child, i) =&gt;
+      traverseDFS(child, processNode, shouldSkipBranch, vdom, i)
+    )
+  }
+}
+</code></pre>
+<p>Because every node is a plain object with a <code>type</code> and optional <code>children</code>, this generic traversal can be reused for many tasks:</p>
+<ul>
+<li>Filling slots</li>
+<li>Debugging visualizers</li>
+<li>Search operations in the virtual tree</li>
+</ul>
+<hr />
+<h2>6. A VNode’s journey: from render to DOM</h2>
+<p>Let’s walk through a simplified lifecycle of one VNode from the moment a component renders until the DOM is updated, using a sequence diagram.</p>
+<p>We’ll show these participants:</p>
+<ul>
+<li><code>Component</code> — your component instance</li>
+<li><code>Renderer</code> — the component’s <code>render()</code> and helpers that produce VNodes</li>
+<li><code>Mount</code> — the <code>mountDOM</code> logic</li>
+<li><code>Patch</code> — the <code>patchDOM</code> logic</li>
+<li><code>BrowserDOM</code> — the actual browser DOM</li>
+</ul>
+<pre class="mermaid">sequenceDiagram
+  participant C as Component
+  participant R as Renderer
+  participant M as Mount
+  participant P as Patch
+  participant B as BrowserDOM
+
+  C->>R: Call render to create virtual node tree
+  R-->>C: Return tree of VNode objects
+  C->>M: Call mount with virtual node and parent element
+  M->>B: Create real DOM nodes from virtual nodes
+  B-->>M: Provide element references for created nodes
+  M-->>C: Attach element references to virtual nodes
+  C->>R: Render again after state change
+  R-->>C: Return updated virtual node tree
+  C->>P: Call patch with old and new virtual nodes
+  P->>B: Apply minimal changes to existing DOM nodes
+  B-->>P: Confirm DOM structure is updated
+</pre>
+<p>Key ideas tied to this flow:</p>
+<ul>
+<li><strong>Renderer</strong>: returns <strong>only VNodes</strong> (blueprints), not DOM.</li>
+<li><strong>Mount</strong>: first-time creation of DOM based on VNodes; writes to <code>vdom.el</code>.</li>
+<li><strong>Patch</strong>: compares old and new VNodes; updates DOM minimally.</li>
+</ul>
+<p><code>DOM_TYPES</code> are consulted in both <code>Mount</code> and <code>Patch</code> to choose the correct behavior for each VNode.</p>
+<hr />
+<h2>7. Creating VNodes in your code</h2>
+<p>You won’t usually write VNode objects by hand. Instead, you’ll use helper functions exported from <code>h.js</code>, re-exported in <code>index.js</code>:</p>
+<pre><code class="language-js">export { DOM_TYPES, h, hFragment, hSlot, hString } from './h.js'
+</code></pre>
+<p>Those helpers do things like:</p>
+<ul>
+<li>Decide whether a node is <code>ELEMENT</code> or <code>COMPONENT</code></li>
+<li>Wrap plain strings into <code>TEXT</code> nodes</li>
+<li>Ensure children lists are cleaned of <code>null</code> and <code>undefined</code></li>
+<li>Mark fragments and slots with the right <code>DOM_TYPES</code> labels</li>
+</ul>
+<p>The <strong>next chapter</strong> is entirely about these helpers: <a href="02_h_hstring_hfragment_hslot.html"><code>h / hString / hFragment / hSlot</code></a>. There we will:</p>
+<ul>
+<li>Write actual render functions that return VNodes</li>
+<li>See how <code>h</code> chooses between <code>ELEMENT</code> and <code>COMPONENT</code></li>
+<li>Use <code>hFragment</code> to return multiple root nodes</li>
+<li>Use <code>hSlot</code> to mark where external content should appear</li>
+</ul>
+<hr />
+<h2>8. Recap</h2>
+<p>By now you should have a mental picture of:</p>
+<ul>
+<li><strong>VNode</strong> — a plain JS object that describes <em>what</em> should appear on the page, not <em>how</em> to build it.</li>
+<li><strong><code>DOM_TYPES</code></strong> — a small set of labels that say which <strong>kind</strong> of virtual node this is:
+<ul>
+<li><code>TEXT</code>, <code>ELEMENT</code>, <code>FRAGMENT</code>, <code>COMPONENT</code>, <code>SLOT</code></li>
+</ul>
+</li>
+<li>How <code>mountDOM</code>, <code>patchDOM</code>, and <code>destroyDOM</code> switch on <code>vdom.type</code> to do the right thing.</li>
+<li>How components work entirely in terms of VNodes, leaving DOM manipulation to a lower-level layer.</li>
+</ul>
+<p>You can think of the system like this:</p>
+<ul>
+<li><strong>Top level</strong>: you write render functions that return <em>blueprints</em> (VNodes).</li>
+<li><strong>Middle level</strong>: the framework uses <code>DOM_TYPES</code> to understand each blueprint piece.</li>
+<li><strong>Bottom level</strong>: specialized functions turn those blueprints into real DOM and keep them up to date.</li>
+</ul>
+<p>In the next chapter, we’ll zoom in on the <em>tools</em> you use to <strong>build these VNodes</strong>: the <code>h</code>, <code>hString</code>, <code>hFragment</code>, and <code>hSlot</code> functions described in <a href="02_h_hstring_hfragment_hslot.html"><code>h / hString / hFragment / hSlot</code></a>. That is where you’ll start writing actual UI code on top of this VNode system.</p>
+
+  <nav class="chapter-nav">
+    <span>&nbsp;</span>
+    <span><a href="02_h_hstring_hfragment_hslot.html">h / hString / hFragment / hSlot &rarr;</a></span>
+  </nav>
+</body>
+</html>

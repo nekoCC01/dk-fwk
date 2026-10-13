@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scheduler / nextTick — src</title>
+<style>
+  :root { --fg: #0d1117; --muted: #57606a; --bg: #fff; --soft: #f6f8fa; --accent: #0969da; --rule: #d0d7de; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 880px; padding: 32px 24px; }
+  h1 { font-size: 1.9em; margin: 0 0 .2em; }
+  h2 { font-size: 1.35em; margin: 1.8em 0 .4em; padding-bottom: .2em; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.1em; margin: 1.4em 0 .3em; }
+  p, li, td, th { color: var(--fg); }
+  p { margin: .8em 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  code { font: .9em/1.4 ui-monospace, "SF Mono", Consolas, monospace; background: var(--soft); padding: 1px 5px; border-radius: 3px; }
+  pre { background: var(--soft); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; font-size: .88em; }
+  pre.mermaid { background: var(--soft); padding: 16px; text-align: center; }
+  blockquote { border-left: 3px solid var(--rule); margin: 1em 0; padding: .2em 1em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--rule); padding: 8px 10px; text-align: left; font-size: .92em; }
+  th { background: var(--soft); }
+  .lens { display: inline-block; padding: 2px 8px; background: var(--soft); border-radius: 4px; font-size: .85em; }
+  nav.chapter-nav { margin: 2em 0 0; padding: 1em 0; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; font-size: .95em; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <p class="muted"><a href="index.html">&larr; src tour</a></p>
+<h1>Chapter 9: Scheduler / nextTick</h1>
+<p>You click a button that mounts a component. That component’s <code>onMounted</code> hook sets up a timer. Another component’s <code>onUnmounted</code> cleans up a subscription. The router changes routes and several components unmount in a row.</p>
+<p>What order do all those things run in?</p>
+<ul>
+<li>Do <code>onMounted</code> hooks fire <strong>during</strong> DOM creation?</li>
+<li>What if a hook is <code>async</code> and returns a promise?</li>
+<li>If you want to wait until <strong>all</strong> those hooks have run and the DOM is stable, what do you <code>await</code>?</li>
+</ul>
+<p>If every part of the framework ran “right now” in random places, you’d get:</p>
+<ul>
+<li>Hard‑to‑predict timing</li>
+<li>Hooks running before elements exist</li>
+<li>Tests that sometimes pass and sometimes fail, depending on micro‑scheduling</li>
+</ul>
+<p>Instead, this framework has a tiny <strong>scheduler</strong>:</p>
+<ul>
+<li>Any part of the codebase can <strong>enqueue a job</strong> with <code>enqueueJob(job)</code>.</li>
+<li>The scheduler batches jobs and runs them in a <strong>microtask</strong>.</li>
+<li><code>nextTick()</code> gives you a <strong>promise</strong> that resolves after those jobs have been <em>started</em>, so you can wait until “the tray has been picked up.”</li>
+</ul>
+<p>Think of it like a <strong>task tray by your desk</strong>:</p>
+<ul>
+<li>Whenever something important needs doing “soon but not right this instant,” you drop a note in the tray.</li>
+<li>The office assistant comes by every few minutes, grabs any notes in the tray, and works through them.</li>
+<li>If you want to wait until the assistant has picked up what’s currently in the tray, you wait for the next pickup. That’s <code>nextTick()</code>.</li>
+</ul>
+<p>We’ll connect this to:</p>
+<ul>
+<li>Component mounting and unmounting from <a href="03_definecomponent_component.html">defineComponent / Component</a></li>
+<li>DOM creation and teardown in <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a></li>
+<li>The way <code>createApp</code> boots everything up in <a href="10_createapp_application_context.html">createApp / Application context</a></li>
+</ul>
+<hr />
+<h2>1. Why scheduling matters in a tiny framework</h2>
+<p>Walk through one simple interaction:</p>
+<ol>
+<li>A component mounts.</li>
+<li>Its render output is turned into DOM with <code>mountDOM</code>.</li>
+<li><code>mountDOM</code> schedules the component’s <code>onMounted</code> lifecycle hook.</li>
+<li>The router changes routes and components unmount.</li>
+<li><code>destroyDOM</code> schedules their <code>onUnmounted</code> hooks.</li>
+</ol>
+<p>Now imagine:</p>
+<ul>
+<li>Hooks ran <strong>inline</strong> during DOM operations.</li>
+<li>One <code>onMounted</code> hook changed state immediately.</li>
+<li>That re‑rendered the component <strong>while</strong> <code>mountDOM</code> was still walking children.</li>
+</ul>
+<p>You’d have a re‑entrant mess: nested renders, patching old VNodes that haven’t even been fully mounted yet, DOM in half‑built states.</p>
+<p>By pushing hooks into a <strong>job queue</strong> and processing that queue <strong>after</strong> the current DOM work is done, the framework guarantees:</p>
+<ul>
+<li><code>mountDOM</code> and <code>destroyDOM</code> can finish cleanly before hooks run.</li>
+<li>All hooks see a <strong>consistent</strong> view of the VNode tree and DOM.</li>
+<li>Multiple jobs get batched into a single microtask instead of scheduling a thousand separate turns.</li>
+</ul>
+<p>That’s what <code>scheduler.js</code> implements.</p>
+<hr />
+<h2>2. The scheduler in one glance</h2>
+<p>Here’s the whole file, split into digestible pieces:</p>
+<pre><code class="language-js">let isScheduled = false
+const jobs = []
+</code></pre>
+<p>Two module‑level variables:</p>
+<ul>
+<li><code>jobs</code> – the tray of pending work; an array of functions to run.</li>
+<li><code>isScheduled</code> – a flag saying “is there already a pickup scheduled?”</li>
+</ul>
+<p>The public API is tiny:</p>
+<pre><code class="language-js">export function enqueueJob(job) {
+  jobs.push(job)
+  scheduleUpdate()
+}
+</code></pre>
+<p>And:</p>
+<pre><code class="language-js">export function nextTick() {
+  scheduleUpdate()
+  return flushPromises()
+}
+</code></pre>
+<p>Per analogy:</p>
+<ul>
+<li><code>enqueueJob(job)</code> → “Drop a note in the tray; call the assistant if they’re not already on the way.”</li>
+<li><code>nextTick()</code> → “Make sure the next pickup is scheduled, then wait until that pickup and related microtasks are done.”</li>
+</ul>
+<p>We’ll walk through:</p>
+<ol>
+<li>How jobs are scheduled and processed.</li>
+<li>How errors inside jobs are handled.</li>
+<li>How <code>nextTick</code> and <code>flushPromises</code> let you wait for a full cycle.</li>
+</ol>
+<hr />
+<h2>3. Enqueuing and scheduling jobs</h2>
+<p>First, adding a job:</p>
+<pre><code class="language-js">export function enqueueJob(job) {
+  jobs.push(job)
+  scheduleUpdate()
+}
+</code></pre>
+<ul>
+<li><code>job</code> is just a function. It can be sync or async.</li>
+<li>The scheduler doesn’t call it immediately; it just pushes it into <code>jobs</code>.</li>
+<li>Then it asks <code>scheduleUpdate()</code> to ensure there’s a microtask planned.</li>
+</ul>
+<p><code>scheduleUpdate</code> is the “only once” guard:</p>
+<pre><code class="language-js">function scheduleUpdate() {
+  if (isScheduled) return
+
+  isScheduled = true
+  queueMicrotask(processJobs)
+}
+</code></pre>
+<p>Key points:</p>
+<ul>
+<li>If we already scheduled a run (<code>isScheduled === true</code>), do nothing.
+<ul>
+<li>This is what makes batching work: 10 calls to <code>enqueueJob</code> within the same microtask only create <strong>one</strong> scheduled <code>processJobs()</code>.</li>
+</ul>
+</li>
+<li>If not scheduled yet:
+<ul>
+<li>Flip <code>isScheduled</code> to <code>true</code>.</li>
+<li>Use <code>queueMicrotask(processJobs)</code> to ask the browser: “After the current stack and microtasks, please call <code>processJobs</code>.”</li>
+</ul>
+</li>
+</ul>
+<p>If you haven’t used <code>queueMicrotask</code> before: it’s like <code>Promise.resolve().then(...)</code>, but more explicit. It runs before any <code>setTimeout</code> (macro tasks), which is what we want: jobs are processed <strong>soon</strong>, but <em>after</em> the current code finishes.</p>
+<p>So the timeline for a few quick calls like:</p>
+<pre><code class="language-js">enqueueJob(jobA)
+enqueueJob(jobB)
+enqueueJob(jobC)
+</code></pre>
+<p>looks like:</p>
+<ul>
+<li>Now: all three jobs are added to <code>jobs</code>. <code>scheduleUpdate</code> only schedules <code>processJobs</code> <strong>once</strong>.</li>
+<li>At the next microtask: <code>processJobs</code> runs and drains the queue.</li>
+</ul>
+<hr />
+<h2>4. Running jobs safely: <code>processJobs</code></h2>
+<p>The “assistant” who empties the tray is <code>processJobs</code>:</p>
+<pre><code class="language-js">function processJobs() {
+  while (jobs.length &gt; 0) {
+    const job = jobs.shift()
+    const result = job()
+
+    Promise.resolve(result).then(
+      () =&gt; {
+        // Job completed successfully
+      },
+      (error) =&gt; {
+        console.error(`[scheduler]: ${error}`)
+      }
+    )
+  }
+
+  isScheduled = false
+}
+</code></pre>
+<p>Line by line:</p>
+<ol>
+<li>
+<p><code>while (jobs.length &gt; 0)</code></p>
+<ul>
+<li>Keep going until the tray is empty.</li>
+<li>If a job enqueues <strong>new</strong> jobs synchronously (<code>enqueueJob</code> inside <code>job()</code>), those will be pushed onto <code>jobs</code> and processed in this same loop.</li>
+</ul>
+</li>
+<li>
+<p><code>const job = jobs.shift()</code></p>
+<ul>
+<li>Take the first job off the queue.</li>
+</ul>
+</li>
+<li>
+<p><code>const result = job()</code></p>
+<ul>
+<li>Run the job.</li>
+<li>The job can:
+<ul>
+<li>Return nothing / a plain value (sync).</li>
+<li>Return a promise (async <code>onMounted</code> or <code>onUnmounted</code>).</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p><code>Promise.resolve(result).then(..., ...)</code></p>
+<ul>
+<li>Wrap whatever the job returned into a promise:
+<ul>
+<li>If it’s already a promise, we just tap into it.</li>
+<li>If it’s a value (including <code>undefined</code>), this creates a resolved promise.</li>
+</ul>
+</li>
+<li>Attach:
+<ul>
+<li>
+<p>A success handler (no‑op here).</p>
+</li>
+<li>
+<p>An error handler that logs any rejection:</p>
+<pre><code class="language-js">(error) =&gt; {
+  console.error(`[scheduler]: ${error}`)
+}
+</code></pre>
+</li>
+</ul>
+</li>
+</ul>
+<p>So if your async <code>onMounted</code> throws or rejects, you see a clear <code>[scheduler]</code> error instead of a silent failure.</p>
+</li>
+<li>
+<p>After all jobs have been run (and their promises chained), the scheduler resets:</p>
+<pre><code class="language-js">isScheduled = false
+</code></pre>
+<p>This allows a <strong>new</strong> scheduling cycle to be set up by future <code>enqueueJob</code> calls.</p>
+</li>
+</ol>
+<p>Analogy: the assistant:</p>
+<ul>
+<li>Picks up every note currently in the tray.</li>
+<li>Starts each task; if it’s a long job, they start it and make sure any error is reported.</li>
+<li>When the tray is empty, they flip the “I’m on the way” sign off so the next person to add a note can call them again.</li>
+</ul>
+<hr />
+<h2>5. How the framework uses <code>enqueueJob</code></h2>
+<p>You’ve already seen <code>enqueueJob</code> show up indirectly in previous chapters.</p>
+<h3>5.1 Component <code>onMounted</code> hooks</h3>
+<p>In <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>, when the framework mounts a component VNode, it does:</p>
+<pre><code class="language-js">case DOM_TYPES.COMPONENT: {
+  createComponentNode(vdom, parentEl, index, hostComponent)
+  enqueueJob(() =&gt; vdom.component.onMounted())
+  break
+}
+</code></pre>
+<p>Sequence:</p>
+<ol>
+<li>
+<p><code>createComponentNode</code>:</p>
+<ul>
+<li>Instantiates the component (from <a href="03_definecomponent_component.html">defineComponent / Component</a>).</li>
+<li>Calls <code>component.mount(parentEl, index)</code>, which:
+<ul>
+<li>Calls <code>component.render()</code></li>
+<li>Mounts the VNode tree via <code>mountDOM</code></li>
+<li>Wires event handlers.</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p>After this is done, <code>enqueueJob(() =&gt; vdom.component.onMounted())</code> adds a job:</p>
+<ul>
+<li>
+<p>The job will call <code>component.onMounted()</code>.</p>
+</li>
+<li>
+<p>Remember in <code>component.js</code>, <code>onMounted</code> wraps the user hook in a promise:</p>
+<pre><code class="language-js">onMounted() {
+  return Promise.resolve(onMounted.call(this))
+}
+</code></pre>
+</li>
+<li>
+<p>So even if the user’s <code>onMounted</code> is <code>async</code> or returns a promise, the scheduler will see that and chain error logging properly.</p>
+</li>
+</ul>
+</li>
+</ol>
+<p>Important: the hook runs <strong>after</strong> mounting is complete and <strong>after</strong> the current tick. This avoids re‑rendering or DOM mutations while the component subtree is still being created.</p>
+<h3>5.2 Component <code>onUnmounted</code> hooks</h3>
+<p>In <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>, <code>destroyDOM</code> uses the scheduler for unmount hooks:</p>
+<pre><code class="language-js">case DOM_TYPES.COMPONENT: {
+  vdom.component.unmount()
+  enqueueJob(() =&gt; vdom.component.onUnmounted())
+  break
+}
+</code></pre>
+<ul>
+<li>First, <code>component.unmount()</code>:
+<ul>
+<li>Calls <code>destroyDOM</code> on the component’s inner VNode tree.</li>
+<li>Unsubscribes any dispatcher subscriptions (the event wiring you saw in <a href="05_dispatcher_and_component_events_emit.html">Dispatcher and component events (emit)</a>).</li>
+</ul>
+</li>
+<li>Then, enqueue a job to run <code>onUnmounted</code> asynchronously, using the same <code>Promise.resolve</code> wrapper as <code>onMounted</code>.</li>
+</ul>
+<p>Again, we get a clean order:</p>
+<ul>
+<li>All DOM and subscription teardown happens <strong>synchronously</strong> during <code>destroyDOM</code>.</li>
+<li>The user’s clean‑up logic runs later via the scheduler, so it can safely assume the component is fully unmounted.</li>
+</ul>
+<hr />
+<h2>6. Waiting for the tray: <code>nextTick</code></h2>
+<p>So far, everything we’ve talked about happens behind the scenes. You don’t usually call <code>enqueueJob</code> yourself; the framework uses it for lifecycle and possibly other internal work.</p>
+<p>But sometimes <strong>you</strong> need to wait for:</p>
+<ul>
+<li>Lifecycle hooks to be scheduled and at least <em>begun</em>.</li>
+<li>DOM changes that depend on those hooks to be visible (for example, in tests).</li>
+<li>Any scheduled jobs from a previous action to have been picked up.</li>
+</ul>
+<p>That’s what <code>nextTick</code> is for:</p>
+<pre><code class="language-js">export function nextTick() {
+  scheduleUpdate()
+  return flushPromises()
+}
+</code></pre>
+<p>Two steps:</p>
+<ol>
+<li>
+<p><code>scheduleUpdate()</code> – ensure that we have at least one scheduled <code>processJobs</code> microtask.</p>
+<ul>
+<li>If there were already jobs in the queue from <code>enqueueJob</code>, this ensures we don’t forget to process them.</li>
+<li>If no jobs yet, we still schedule an empty run; this keeps the semantics simple: “nextTick resolves <em>after</em> the next scheduled cycle could have run.”</li>
+</ul>
+</li>
+<li>
+<p><code>return flushPromises()</code> – give you a promise that resolves after the microtask and its follow‑up microtasks have been processed.</p>
+</li>
+</ol>
+<p>So you can write:</p>
+<pre><code class="language-js">import { nextTick } from './scheduler'
+
+async function afterStateChange() {
+  this.updateState({ count: 2 })
+  await nextTick()
+  // At this point, any queued lifecycle hooks or other jobs have been picked up
+}
+</code></pre>
+<p>This is especially handy in tests:</p>
+<ul>
+<li>Change state.</li>
+<li>Await <code>nextTick()</code>.</li>
+<li>Assert on the DOM.</li>
+</ul>
+<h3>6.1 How <code>flushPromises</code> works</h3>
+<p>The helper used by <code>nextTick</code> is:</p>
+<pre><code class="language-js">function flushPromises() {
+  return new Promise((resolve) =&gt; setTimeout(resolve))
+}
+</code></pre>
+<p>This tiny <code>setTimeout</code> is more subtle than it looks; the big comment above it explains the idea:</p>
+<ol>
+<li>You call <code>flushPromises()</code>.</li>
+<li>It returns a new promise, and schedules a <strong>macro task</strong> with <code>setTimeout</code>.</li>
+<li>That task runs <strong>after</strong>:
+<ul>
+<li>The current call stack finishes.</li>
+<li>All pending <strong>microtasks</strong> run (including the <code>processJobs</code> microtask from <code>queueMicrotask</code>).</li>
+</ul>
+</li>
+<li>When the timer fires, it calls <code>resolve()</code>, which itself is a microtask.</li>
+<li>So by the time your <code>await flushPromises()</code> resolves:
+<ul>
+<li>The next microtask tick has completed.</li>
+<li>Any jobs queued for that tick have been started and their promise callbacks queued.</li>
+</ul>
+</li>
+</ol>
+<p>Combine that with <code>scheduleUpdate()</code>:</p>
+<ul>
+<li><code>scheduleUpdate()</code> ensures <code>processJobs</code> is in the microtask queue, if it isn’t already.</li>
+<li><code>flushPromises()</code> ensures you only continue after that microtask and its follow‑up microtasks are allowed to run.</li>
+</ul>
+<p>Analogy: imagine you want to be sure the assistant has picked up the tray <strong>and</strong> had a chance to glance through the tasks. You set a timer that rings <em>after</em> the assistant’s next pickup round. <code>nextTick</code> is that “ring after the next pickup” promise.</p>
+<hr />
+<h2>7. A full cycle: state change, lifecycle, and <code>nextTick</code></h2>
+<p>Let’s put everything together with a concrete sequence:</p>
+<ul>
+<li>A component mounts.</li>
+<li>Its <code>onMounted</code> schedules an async effect.</li>
+<li>You change state.</li>
+<li>You await <code>nextTick()</code> to be sure all lifecycle jobs have kicked off before checking the DOM.</li>
+</ul>
+<p>We’ll keep the code conceptual:</p>
+<pre><code class="language-js">import { defineComponent } from './component'
+import { h } from './h'
+import { nextTick } from './scheduler'
+
+export const Demo = defineComponent({
+  state() {
+    return { visible: false }
+  },
+
+  async onMounted() {
+    // Simulate async work
+    await new Promise((r) =&gt; setTimeout(r, 10))
+    this.updateState({ visible: true })
+  },
+
+  render() {
+    return h('div', null, [
+      this.state.visible ? 'Visible' : 'Hidden',
+    ])
+  },
+})
+</code></pre>
+<p>Imagine a test:</p>
+<pre><code class="language-js">// mount Demo somewhere
+// text currently: &quot;Hidden&quot;
+
+await nextTick()
+// After this, `onMounted` was scheduled and started,
+// but its inner setTimeout may not have fired yet.
+// After that timer fires and updateState runs, you could await another nextTick()
+// to see &quot;Visible&quot;.
+</code></pre>
+<p>To visualize the moving pieces, here’s the single sequence diagram for this chapter.</p>
+<pre class="mermaid">sequenceDiagram
+  participant Comp as Component
+  participant Dom as DomEngine
+  participant Sched as Scheduler
+  participant Tick as NextTick
+  participant User as TestCode
+
+  User->>Comp: Change state or mount component
+  Comp->>Dom: Create or patch virtual view
+  Dom->>Sched: Enqueue lifecycle jobs
+  User->>Tick: Wait for next tick promise
+  Tick->>Sched: Ensure processing is scheduled and wait
+</pre>
+<p>Relate that to earlier chapters:</p>
+<ul>
+<li><code>DomEngine</code> is <code>mountDOM</code> / <code>patchDOM</code> / <code>destroyDOM</code> from <a href="04_mountdom_destroydom_patchdom.html">mountDOM / destroyDOM / patchDOM</a>.</li>
+<li><code>Component</code> is the instance from <a href="03_definecomponent_component.html">defineComponent / Component</a>.</li>
+<li><code>Scheduler</code> and <code>NextTick</code> are <code>enqueueJob</code>, <code>processJobs</code>, and <code>nextTick</code> in this chapter.</li>
+<li><code>TestCode</code> could be actual tests or any code that wants to wait until pending jobs are processed.</li>
+</ul>
+<hr />
+<h2>8. When you might use <code>nextTick</code> yourself</h2>
+<p>Most application code doesn’t need to know about the scheduler. You call <code>updateState</code>, the framework patches the DOM; you trust it.</p>
+<p>There are two common situations where you <strong>do</strong> reach for <code>nextTick</code>:</p>
+<h3>8.1 In tests</h3>
+<p>You often need to wait for:</p>
+<ul>
+<li>Mounted components to finish scheduling their <code>onMounted</code> hooks.</li>
+<li>Any state changes those hooks cause to propagate through <code>patchDOM</code>.</li>
+</ul>
+<p>Pattern:</p>
+<pre><code class="language-js">component.updateState({ something: true })
+await nextTick()
+// Assert on the rendered DOM
+</code></pre>
+<p>This avoids brittle “wait a bit” timers in tests and directly targets the framework’s update cycle.</p>
+<h3>8.2 When measuring or reading the DOM after side‑effects</h3>
+<p>Sometimes you need DOM information <em>after</em> lifecycle work:</p>
+<ul>
+<li>Measuring element sizes after they are made visible.</li>
+<li>Reading scroll positions after a component scrolled something in <code>onMounted</code>.</li>
+</ul>
+<p>Pattern inside a component method:</p>
+<pre><code class="language-js">async mountedAction() {
+  // some state change that triggers DOM update and lifecycle jobs
+  this.updateState({ open: true })
+
+  await nextTick()
+
+  // Now DOM updates and queued jobs should have run
+  const height = this.firstElement.getBoundingClientRect().height
+  // ...
+}
+</code></pre>
+<p>It’s a way of saying: “Run this after everything currently pending has had a chance to start.”</p>
+<hr />
+<h2>9. Recap</h2>
+<p>The scheduler is a tiny but important piece tying together many other chapters:</p>
+<ul>
+<li>It maintains a <strong>job queue</strong> (<code>jobs</code>) and a <strong>scheduled flag</strong> (<code>isScheduled</code>).</li>
+<li><code>enqueueJob(job)</code>:
+<ul>
+<li>Adds a job to the queue.</li>
+<li>Ensures a single <code>processJobs</code> microtask will process all queued jobs in a batch.</li>
+</ul>
+</li>
+<li><code>processJobs</code>:
+<ul>
+<li>Drains the job queue.</li>
+<li>Wraps each job’s result in <code>Promise.resolve</code> to handle async hooks and log rejections.</li>
+</ul>
+</li>
+<li><code>nextTick()</code>:
+<ul>
+<li>Calls <code>scheduleUpdate()</code> to guarantee processing is scheduled.</li>
+<li>Returns a promise from <code>flushPromises()</code> that resolves after the next macro/microtask cycle.</li>
+</ul>
+</li>
+</ul>
+<p>The rest of the framework leans on this:</p>
+<ul>
+<li><code>mountDOM</code> uses <code>enqueueJob</code> to run <code>onMounted</code> hooks after DOM creation.</li>
+<li><code>destroyDOM</code> uses <code>enqueueJob</code> to run <code>onUnmounted</code> hooks after teardown.</li>
+<li><code>createApp</code> from <a href="10_createapp_application_context.html">createApp / Application context</a> relies on this to keep app lifecycle predictable and testable.</li>
+</ul>
+<p>The result is a small, predictable <strong>update cycle</strong> you can reason about and wait for, even though individual hooks may be async.</p>
+<p>Now that you’ve seen how work is batched and awaited, you’re ready for the final piece: how the whole app is created and wired together at the top. In the next chapter, <a href="10_createapp_application_context.html">createApp / Application context</a>, you’ll see how the root component, router, and scheduler come together into a single <code>createApp</code> entry point your application code calls.</p>
+
+  <nav class="chapter-nav">
+    <span><a href="08_routematcher_validateroute.html">&larr; RouteMatcher / validateRoute</a></span>
+    <span><a href="10_createapp_application_context.html">createApp / Application context &rarr;</a></span>
+  </nav>
+</body>
+</html>
